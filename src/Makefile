@@ -63,7 +63,8 @@ DBV1_OPT=-I$(DBV1_DIR) $(DBV1_DIR)/db/src/libhidb.a \
 
 CC=gcc
 BIN_TARGET=hdb_test
-INC=-Icore -Idb $(INC_DEP) $(ALLOC_FLAGS) -I$(BASE_DIR)/util -I.
+INC_PROD=-Icore -Idb $(INC_DEP) $(ALLOC_FLAGS) -I$(BASE_DIR)/util -I.
+INC_TEST=-Icore -Idb $(INC_DEP) -I.
 SRC=core/*.c db/*.c
 OBJ=core/*.o db/*.o
 BUILD=build
@@ -76,7 +77,7 @@ TEST_CCFLAG = -DFOR_UNIT_TEST
 
 mklib: 
 	-mkdir -p $(BUILD_INC) $(BUILD_OBJ) $(BUILD_LIB)
-	$(CC) -c -DUSE_ZMALLOC $(CCFLAG) $(INC) $(SRC)	\
+	$(CC) -c -DUSE_ZMALLOC $(CCFLAG) $(INC_PROD) $(SRC)	\
 	$(UTIL_FLAGS)   					\
 	$(PF_FLAGS)   						\
 	$(BL_FLAGS)   						\
@@ -88,17 +89,17 @@ mklib:
 
 mkar: 
 	-mkdir -p $(BUILD_INC) $(BUILD_OBJ) $(BUILD_LIB)
-	$(CC) -c $(TEST_CCFLAG) $(CCFLAG) $(INC) $(SRC)
+	$(CC) -c $(TEST_CCFLAG) $(CCFLAG) $(INC_TEST) $(SRC)
 	mv *.o $(BUILD_OBJ)
 	ar rcs $(BUILD_LIB)/$(LIBHIDB2) $(BUILD_OBJ)/*.o
 	cp db/db.h db/db_com_def.h $(BUILD_INC)
 
 mktest: mkar
-	$(CC) -o $(BIN_TARGET) test/*.c $(BUILD_LIB)/$(LIBHIDB2) -Itest $(INC) \
-		$(TEST_CCFLAG) $(CCFLAG) $(DBV1_OPT) $(LIB_DEP)
+	$(CC) -o $(BIN_TARGET) test/*.c $(BUILD_LIB)/$(LIBHIDB2) -Itest $(INC_TEST) \
+		$(TEST_CCFLAG) $(CCFLAG) $(LIB_DEP)
 
 mkprod: mklib
-	$(CC) -DUSE_ZMALLOC -o $(BIN_TARGET) test/*.c $(BUILD_LIB)/$(LIBHIDB2) -Itest $(INC) \
+	$(CC) -DUSE_ZMALLOC -o $(BIN_TARGET) test/*.c $(BUILD_LIB)/$(LIBHIDB2) -Itest $(INC_PROD) \
 		$(CCFLAG) $(DBV1_OPT) $(LIB_DEP)
 
 clean:

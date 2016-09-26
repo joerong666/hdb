@@ -7,7 +7,9 @@
 #include <unistd.h>
 #include <pthread.h>
 
+#if 0
 #include "db/include/db.h"
+#endif
 #include "build/include/db.h"
 
 #define UNUSED(_x) ((void)(_x))
@@ -117,7 +119,9 @@ static int test_db_put(T *db)
         vs = strlen(vdata);
 
         if (dbver == 1) {
+#if 0
             r = db_put(db, kdata, ks, vdata, vs);
+#endif
         } else {
             r = HIDB2(db_put)(db, kdata, ks, vdata, vs);
         }
@@ -188,7 +192,9 @@ static int test_db_del(T *db)
         ks = strlen(kdata);
 
         if (dbver == 1) {
+#if 0
             r = db_del(db, kdata, ks);
+#endif
         } else {
             r = HIDB2(db_del)(db, kdata, ks);
         }
@@ -264,7 +270,9 @@ static int test_db_get(T *db)
         ks = strlen(kdata);
 
         if (dbver == 1) {
+#if 0
             r = db_get(db, kdata, ks, &vdp, &vs, NULL);
+#endif
         } else {
             r = HIDB2(db_get)(db, kdata, ks, &vdp, &vs, NULL);
         }
@@ -298,14 +306,18 @@ static int test_db_iter(T *db)
     TEST_START();
 
     if (dbver == 1) {
+#if 0
         it = db_create_it(db, 15);
+#endif
     } else {
         it = HIDB2(db_create_it)(db, 15);
     }
 
     while (1) {
         if (dbver == 1) {
+#if 0
             r = db_iter(it, &k, &ks, &v, &vs, NULL);
+#endif
         } else {
             r = HIDB2(db_iter)(it, &k, &ks, &v, &vs, NULL);
         }
@@ -332,7 +344,9 @@ _next:
     }
 
     if (dbver == 1) {
+#if 0
         db_destroy_it(it);
+#endif
     } else {
         HIDB2(db_destroy_it)(it);
     }
@@ -395,7 +409,9 @@ static int test_db_single_pget(T *db)
         ks = strlen(kdata);
 
         if (dbver == 1) {
+#if 0
             r = db_get(db, kdata, ks, &vdp, &vs, NULL);
+#endif
         } else {
             it = HIDB2(db_pget)(db, kdata, ks);
             r = HIDB2(db_iter)(it, &kdp, &ks, &vdp, &vs, NULL);
@@ -470,7 +486,9 @@ int main(int argc, char *argv[])
     dbver = dbe_version(dbpath);
 
     if (dbver == 1) {
+#if 0
         db = db_open(dbpath, NULL);
+#endif
     } else {
         db = HIDB2(db_open)(dbpath, NULL);
     }
@@ -478,7 +496,9 @@ int main(int argc, char *argv[])
     test_init(db);
 
     if (dbver == 1) {
+#if 0
         db_run(db);
+#endif
     } else {
         HIDB2(db_run)(db);
     }
@@ -577,7 +597,9 @@ int main(int argc, char *argv[])
     read(1, buf, 1);
 
     if (dbver == 1) {
+#if 0
         db_close(db);
+#endif
     } else {
         HIDB2(db_close)(db);
     }
