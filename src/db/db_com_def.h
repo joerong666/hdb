@@ -3,7 +3,7 @@
 
 #ifndef DB_KVFILTER
 #define DB_KVFILTER
-typedef int32_t (*DB_KFILTER)(char *);
+typedef int32_t (*DB_KFILTER)(char *, size_t);
 typedef int32_t (*DB_VFILTER)(const char *, size_t, int *expire);
 #endif
 

@@ -4,6 +4,11 @@
 #define T blksaver_t
 typedef struct blksaver_s T;
 
+typedef struct {
+    void *buf;
+    struct list_head page_node;
+} blkpage_t;
+
 struct blksaver_s {
     /* must be the first field */
     obj_t  super;
@@ -14,6 +19,7 @@ struct blksaver_s {
     int meta_size;
     int blkcnt;
 
+    struct list_head page_list;
     hdr_block_t *hdr;
 
     /* public fields */

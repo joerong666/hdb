@@ -7,6 +7,7 @@
 enum cpct_type_e {
     CPCT_MAJOR = 0,
     CPCT_L0,
+    CPCT_AJACENT,
     CPCT_REMOTE,
     CPCT_SHRINK,
     CPCT_SPLIT,

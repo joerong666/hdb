@@ -7,7 +7,7 @@
 #define T dbit_impl_t
 
 enum lock_flag_e {
-    LOCK_IMQ = 1,
+    LOCK_MMT = 1,
     LOCK_L0 = (1 << 1),
     LOCK_Ln = (1 << 2),
 };
@@ -44,7 +44,7 @@ static int prefix_cmp(mkey_t *target, mkey_t *start, mkey_t *stop)
 
     if (target->len < start->len) return -1;
 
-    return strncmp(target->data, start->data, start->len);
+    return memcmp(target->data, start->data, start->len);
 }
 
 static int range_cmp(mkey_t *target, mkey_t *start, mkey_t *stop)
@@ -99,68 +99,49 @@ static int ht_range_cmp(void *target, void *start, void *stop)
     return range_cmp(&t->k, bk, ek);
 }
 
-static int   extract_mkey(T *thiz, mkv_t *dst, mkv_t *src)
+static int   extract_mkmeta(T *thiz, mkv_t *dst, mkv_t *src)
 {
     (void)thiz;
 
     dst->type = src->type;
     dst->vcrc = src->vcrc;
-    dst->off = src->off;
     dst->seq = src->seq;
 
     dst->k.len = src->k.len;
-    dst->k.data = MY_Malloc(dst->k.len);
+    return 0;
+}
 
+static int   extract_mkey(T *thiz, mkv_t *dst, mkv_t *src)
+{
+    (void)thiz;
+
+    dst->k.data = MY_Malloc(dst->k.len);
     memcpy(dst->k.data, src->k.data, dst->k.len);
 
     return 0;
 }
 
-static int   extract_mval(T *thiz, mkv_t *dst, mkv_t *src)
+static int   extract_mval(mkv_t *dst, mkv_t *src)
 {
-    int r = 0, fd;
-
     dst->v.len = src->v.len;
     dst->v.data = MY_Malloc(dst->v.len);
-
-    if (dst->type & KV_VTP_BINOFF) {
-#if 1
-        fd = SELF->cur_mtb->fd;
-#else
-        if (thiz->flag & IT_MMTB) {
-            fd = thiz->mmtb->fd;
-        } else {
-            fd = SELF->mtb->fd;
-        }
-#endif
-        r = read_bin_val(fd, dst); 
-        if (r == -1) goto _out;
-
-    } else {
-        memcpy(dst->v.data, src->v.data, dst->v.len);
-    }
-
-_out:
-    if (r == -1) {
-        MY_Free(dst->v.data);
-        return -1;
-    }
+    memcpy(dst->v.data, src->v.data, dst->v.len);
 
     return 0;
 }
 
-static int check_mkexist(T *thiz, mkey_t *k, mtb_t *tb)
+static int check_mkexist(T *thiz, mkv_t *kv, mtb_t *tb)
 {
     int r;
     mtb_t *mtb;
     mtbset_t *mq;
 
     mtb = thiz->mmtb;
-    r = mtb->exist(mtb, k);
+    r = mtb->exist(mtb, &kv->k);
     if (r) return r;
 
     mq = thiz->imq;
-    r = mq->exist(mq, k, tb);
+    r = mq->exist(mq, &kv->k, tb);
     if (r) return r;
 
     return 0;
@@ -202,16 +183,28 @@ static int check_fkexist(T *thiz, fkv_t *fkv, ftb_t *tb)
     return 0;
 }
 
-static int mkvflt(T *thiz, mkv_t *kv)
+static int mkeyflt(T *thiz, mkv_t *kv)
 {
     conf_t *cnf = thiz->container->conf;
-    return cnf->mkvflt(cnf, kv);
+    return cnf->mkeyflt(cnf, kv);
 }
 
-static int fkvflt(T *thiz, fkv_t *fkv)
+static int mvalflt(T *thiz, mkv_t *kv)
 {
     conf_t *cnf = thiz->container->conf;
-    return cnf->fkvflt(cnf, fkv);
+    return cnf->mvalflt(cnf, kv);
+}
+
+static int fkeyflt(T *thiz, fkv_t *fkv)
+{
+    conf_t *cnf = thiz->container->conf;
+    return cnf->fkeyflt(cnf, fkv);
+}
+
+static int fvalflt(T *thiz, fkv_t *fkv)
+{
+    conf_t *cnf = thiz->container->conf;
+    return cnf->fvalflt(cnf, fkv);
 }
 
 static int it_mmt(T *thiz, mkv_t *kv)
@@ -222,6 +215,9 @@ static int it_mmt(T *thiz, mkv_t *kv)
     htiter_t *iter = SELF->miter;
 
     if (!(thiz->flag & IT_BEG)) {
+        RWLOCK_WRITE(&tb->lock);
+        SELF->lock_flag |= LOCK_MMT;
+
         thiz->flag |= IT_BEG;
 
         iter = tb->model->get_iter(tb->model, SELF->mstartptr, SELF->mstopptr, SELF->htcmp);
@@ -229,29 +225,42 @@ static int it_mmt(T *thiz, mkv_t *kv)
         SELF->cur_mtb = tb;
         SELF->miter = iter;
 
-        PROMPT("iterate %s", tb->file);
+        INFO("iterate %s", tb->file);
     }
 
-    r = 0;
-    while (iter->has_next(iter)) {
-        iter->next(iter);
-        iter->get(iter, (void **)&tkv);
+    do {
+        r = 0;
+        if (iter->has_next(iter)) {
+            iter->next(iter);
+            iter->get(iter, (void **)&tkv);
 
-        if (mkvflt(thiz, tkv)) continue;
+            if (mkeyflt(thiz, tkv)) continue;
 
-        r = 1;
-        break;
-    }
+            extract_mkmeta(thiz, kv, tkv);
+            if (!(thiz->flag & IT_ONLY_KEY)) {
+                extract_mval(kv, tkv);
+                if (mvalflt(thiz, kv)) {
+                    MY_Free(kv->v.data);
+                    continue;
+                }
+            }
 
-    if (r) {
-        extract_mkey(thiz, kv, tkv);
-        if (!(thiz->flag & IT_ONLY_KEY)) {
-            extract_mval(thiz, kv, tkv);
+            r = 1;
         }
-    } else {
-        iter->destroy(iter);
-        thiz->flag &= ~IT_BEG;
-    }
+
+        if (r) {
+            extract_mkey(thiz, kv, tkv);
+            break;
+        } else {
+            iter->destroy(iter);
+            SELF->miter = NULL;
+            thiz->flag &= ~IT_BEG;
+
+            SELF->lock_flag &= ~LOCK_MMT;
+            RWUNLOCK(&tb->lock);
+            break;
+        }
+    } while(1);
 
     return r;
 }
@@ -274,30 +283,36 @@ static int it_imt(T *thiz, mkv_t *kv)
         SELF->cur_mtb = tb;
         SELF->miter = iter;
 
-        PROMPT("iterate %s", tb->file);
+        INFO("iterate %s", tb->file);
     }
 
-    r = 0;
     do {
-        while (iter->has_next(iter)) {
+        r = 0;
+        if (iter->has_next(iter)) {
             iter->next(iter);
             iter->get(iter, (void **)&tkv);
 
-            if (mkvflt(thiz, tkv)) continue;
-            if (check_mkexist(thiz, &tkv->k, tb)) continue;
+            if (mkeyflt(thiz, tkv)) continue;
+            if (check_mkexist(thiz, tkv, tb)) continue;
+
+            extract_mkmeta(thiz, kv, tkv);
+            if (!(thiz->flag & IT_ONLY_KEY)) {
+                extract_mval(kv, tkv);
+                if (mvalflt(thiz, kv)) {
+                    MY_Free(kv->v.data);
+                    continue;
+                }
+            }
 
             r = 1;
-            break;
         }
 
         if (r) {
             extract_mkey(thiz, kv, tkv);
-            if (!(thiz->flag & IT_ONLY_KEY)) {
-                extract_mval(thiz, kv, tkv);
-            }
             break;
         } else {
             iter->destroy(iter);
+            SELF->miter = NULL;
 
             if (list_is_last(&tb->mnode, &thiz->imq->mlist)) {
                 thiz->flag &= ~IT_BEG;
@@ -310,7 +325,7 @@ static int it_imt(T *thiz, mkv_t *kv)
             SELF->cur_mtb = tb;
             SELF->miter = iter;
 
-            PROMPT("iterate %s", tb->file);
+            INFO("iterate %s", tb->file);
         }
     } while(1);
 
@@ -341,36 +356,40 @@ static int it_file(T *thiz, int lv, mkv_t *kv)
         SELF->cur_ftb = tb;
         SELF->fiter = iter;
 
-        PROMPT("iterate %s", tb->file);
+        INFO("iterate %s", tb->file);
     }
 
-    r = 0;
     do {
-        while (iter->has_next(iter)) {
+        r = 0;
+        if (iter->has_next(iter)) {
             iter->get_next(iter, &tkv);
             iter->next(iter);
 
-            if (fkvflt(thiz, tkv)) continue;
+            if (fkeyflt(thiz, tkv)) continue;
             if (check_fkexist(thiz, tkv, tb)) continue;
 
+            if (!(thiz->flag & IT_ONLY_KEY)) {
+                extract_fval(iter->container->rfd, tkv);
+                if (fvalflt(thiz, tkv)) {
+                    MY_Free(tkv->kv->v.data);
+                    continue;
+                }
+            }
+
             r = 1;
-            break;
         }
 
         if (r) {
             extract_fkey(tkv);
-            if (!(thiz->flag & IT_ONLY_KEY)) {
-                extract_fval(iter->container->rfd, tkv);
-            }
-
             memcpy(kv, tkv->kv, sizeof(mkv_t));
             break;
         } else {
             iter->destroy(iter);
+            SELF->fiter = NULL;
 
             if (list_is_last(&tb->fnode, &fq->flist)) {
                 thiz->flag &= ~IT_BEG;
-                return 0;
+                break;
             }
 
             tb = list_first_entry(&tb->fnode, ftb_t, fnode);
@@ -379,7 +398,7 @@ static int it_file(T *thiz, int lv, mkv_t *kv)
             SELF->cur_ftb = tb;
             SELF->fiter = iter;
 
-            PROMPT("iterate %s", tb->file);
+            INFO("iterate %s", tb->file);
         }
     } while(1);
 
@@ -391,7 +410,7 @@ static int next(T *thiz, mkv_t *kv)
     int r;
 
     if (thiz->flag & IT_FIN) {
-        PROMPT("iterate finished");
+        INFO("iterate finished");
         goto _out;
     }
 
@@ -403,7 +422,7 @@ static int next(T *thiz, mkv_t *kv)
         thiz->flag &= ~IT_MMTB;
         thiz->flag |= IT_IMTB;
 
-        PROMPT("iterate mmtable finished");
+        INFO("iterate mmtable finished");
     }
  
     if (thiz->flag & IT_IMTB) {
@@ -414,7 +433,7 @@ static int next(T *thiz, mkv_t *kv)
         thiz->flag &= ~IT_IMTB;
         thiz->flag |= IT_L0;
 
-        PROMPT("iterate imtable finished");
+        INFO("iterate imtable finished");
     }
         
     if (thiz->flag & IT_L0) {
@@ -425,7 +444,7 @@ static int next(T *thiz, mkv_t *kv)
         thiz->flag &= ~IT_L0;
         thiz->flag |= IT_Ln;
 
-        PROMPT("iterate L0 finished");
+        INFO("iterate L0 finished");
     }
 
     if (thiz->flag & IT_Ln) {
@@ -436,7 +455,7 @@ static int next(T *thiz, mkv_t *kv)
         thiz->flag &= ~IT_Ln;
         thiz->flag |= IT_FIN;
 
-        PROMPT("iterate Ln finished");
+        INFO("iterate Ln finished");
     }
     
 _out:
@@ -484,7 +503,15 @@ static int init(T *thiz)
 
 static void destroy(T *thiz)
 {
+    if (SELF->miter) SELF->miter->destroy(SELF->miter);
+    if (SELF->fiter) SELF->fiter->destroy(SELF->fiter);
+
     RWUNLOCK(&thiz->imq->lock);
+
+    if (SELF->lock_flag & LOCK_MMT) {
+        SELF->lock_flag &= ~LOCK_MMT;
+        RWUNLOCK(&thiz->mmtb->lock);
+    }
 
     if (SELF->lock_flag & LOCK_L0) {
         SELF->lock_flag &= ~LOCK_L0;

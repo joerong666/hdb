@@ -1,4 +1,3 @@
-
 /*
  * Copyright (C) Igor Sysoev
  */
@@ -9,6 +8,7 @@
 #include <string.h>
 #include "palloc.h"
 
+#ifndef USE_ZMALLOC
 static void *palloc_block(pool_t *pool, size_t size);
 static void *palloc_large(pool_t *pool, size_t size);
 
@@ -396,4 +396,103 @@ void *prealloc(pool_t *pool, void *p, size_t old_size, size_t new_size)
     return new; 
 } 
 
+#else 
+#warning "USE ZMALLOC for palloc ..................."
+#include "my_malloc.h"
+
+#define MY_Malloc my_malloc
+#define MY_Calloc my_calloc
+#define MY_Free my_free
+
+typedef struct pnode_s pnode_t;
+
+struct pnode_s {
+    pnode_t *next;
+    void *data;
+};
+
+typedef struct ompool_s {
+    pool_t  mp;
+    pnode_t *head;
+    pnode_t *tail;
+} ompool_t;
+
+pool_t *pool_create(size_t size)
+{
+    (void)size;
+    ompool_t *opool = MY_Calloc(sizeof(*opool));
+    return &opool->mp;
+}
+
+void pool_reset(pool_t *pool)
+{
+    pnode_t *n, *t;
+    ompool_t *opool = (ompool_t *)pool;
+
+    n = opool->head;
+    while (n) {
+        t = n->next;
+        MY_Free(n->data);
+        MY_Free(n);
+        n = t;
+    }
+
+    opool->head = opool->tail = NULL;
+}
+
+void pool_destroy(pool_t *pool)
+{
+    pool_reset(pool);
+    
+    MY_Free((ompool_t *)pool);
+}
+
+static void *alloc_i(pool_t *pool, size_t size, int zero)
+{
+    pnode_t *n;
+    ompool_t *opool = (ompool_t *)pool;
+
+    n = MY_Calloc(sizeof(*n));
+    if (n == NULL) return NULL;
+
+    if (zero) {
+        n->data = MY_Calloc(size);
+    } else {
+        n->data = MY_Malloc(size);
+    }
+
+    if (n->data == NULL) {
+        MY_Free(n);
+        return NULL;
+    }
+
+    if (opool->head == NULL) {
+        opool->head = opool->tail = n;
+    } else {
+        opool->tail->next = n;
+        opool->tail = n;
+    }
+
+    return n->data;
+}
+
+void *palloc(pool_t *pool, size_t size)
+{
+    return alloc_i(pool, size, 0);
+}
+
+void *pcalloc(pool_t *pool, size_t size)
+{
+    return alloc_i(pool, size, 1);
+}
+
+int32_t pfree(pool_t *pool, void *p)
+{
+    (void)pool;
+    (void)p;
+
+    return 0;
+}
+
+#endif
 

@@ -6,37 +6,37 @@
 #define T blksaver_t
 #define META_SIZE 64
 
-#define APPEND_KEY_CHAIN(_fkv) do {                             \
-    nchain = chain_alloc_buflink(SUPER->mpool);                 \
-    if (_fkv->kv->type & KV_KTP_FROM_FILE) {                    \
-        nchain->buf->start = _fkv->kv->k.data;                  \
-    } else {                                                    \
-        nchain->buf->start = NULL;                              \
-    }                                                           \
-    _fkv->kshare.data = _fkv->kv->k.data;                       \
-    _fkv->kdelt.data = _fkv->kv->k.data + _fkv->kshare.len;     \
-    nchain->buf->pos = _fkv->kdelt.data;                        \
-    nchain->buf->last = _fkv->kdelt.data + _fkv->kdelt.len;     \
-    chain_append(&SELF->tchain, nchain);                        \
-    SELF->tchain = nchain;                                      \
+#define APPEND_KEY_CHAIN(_fkv) do {                                         \
+    nchain = chain_alloc_buflink(SELF->blk_mp);                             \
+    if (_fkv->kv->type & KV_KTP_FROM_FILE) {                                \
+        nchain->buf->start = (uint8_t *)_fkv->kv->k.data;                   \
+    } else {                                                                \
+        nchain->buf->start = NULL;                                          \
+    }                                                                       \
+    _fkv->kshare.data = _fkv->kv->k.data;                                   \
+    _fkv->kdelt.data = _fkv->kv->k.data + _fkv->kshare.len;                 \
+    nchain->buf->pos = (uint8_t *)_fkv->kdelt.data;                         \
+    nchain->buf->last = (uint8_t *)(_fkv->kdelt.data + _fkv->kdelt.len);    \
+    chain_append(&SELF->tchain, nchain);                                    \
+    SELF->tchain = nchain;                                                  \
 } while (0)
 
 /* just append for free, no data to write */
 #define APPEND_VAL_CHAIN(_fkv) do {                             \
-    nchain = chain_alloc_buflink(SUPER->mpool);                 \
-    nchain->buf->start = _fkv->kv->v.data;                      \
-    nchain->buf->pos = _fkv->kv->v.data;                        \
-    nchain->buf->last = _fkv->kv->v.data;                       \
+    nchain = chain_alloc_buflink(SELF->blk_mp);                 \
+    nchain->buf->start = (uint8_t *)_fkv->kv->v.data;           \
+    nchain->buf->pos = (uint8_t *)_fkv->kv->v.data;             \
+    nchain->buf->last = (uint8_t *)_fkv->kv->v.data;            \
     chain_append(&SELF->tchain, nchain);                        \
     SELF->tchain = nchain;                                      \
 } while (0)
 
 /* just append for write, no need free */
 #define APPEND_BUF_CHAIN(_buf, _len) do {                       \
-    nchain = chain_alloc_buflink(SUPER->mpool);                 \
+    nchain = chain_alloc_buflink(SELF->blk_mp);                 \
     nchain->buf->start = NULL;                                  \
-    nchain->buf->pos = _buf;                                    \
-    nchain->buf->last = _buf + (_len);                          \
+    nchain->buf->pos = (uint8_t *)_buf;                         \
+    nchain->buf->last = (uint8_t *)(_buf + (_len));             \
     chain_append(&SELF->tchain, nchain);                        \
     SELF->tchain = nchain;                                      \
 } while (0)
@@ -57,51 +57,10 @@ struct blksaver_pri {
     mkey_t last_k;
     mkey_t share_k;
 
+    pool_t  *blk_mp;
     chain_t *chain;  /* head of block buf chain */
     chain_t *tchain; /* tail of block buf chain */
 };
-
-/****************************************
-** function declaration
-*****************************************/
-static void  destroy(T *thiz);
-static int flush(T *thiz);
-
-static int  _init(T *thiz);
-
-/****************************************
-** public function
-*****************************************/
-T *blksaver_create(pool_t *mpool)
-{
-    T *thiz = new_obj(mpool, sizeof(*thiz) + sizeof(*SELF));
-    if (thiz == NULL) return NULL;
-
-    SELF = (typeof(SELF))((char *)thiz + sizeof(*thiz));
-
-    if (_init(thiz) != 0) {
-        del_obj(thiz);     
-        return NULL;       
-    }                      
-
-    return thiz;           
-}
-
-/****************************************
-** private function
-*****************************************/
-static int _init(T *thiz)
-{
-    ADD_METHOD(destroy);
-    ADD_METHOD(flush);
-
-    return 0;
-}
-
-static void destroy(T *thiz)
-{
-    del_obj(thiz);
-}
 
 static int seri_blk_meta(T *thiz, char *blkbuf)
 {
@@ -142,14 +101,11 @@ static int save_block(T *thiz)
     }
 
     tsz = thiz->meta_size;
-    r = MY_Memalign((void *)&blkbuf, getpagesize(), thiz->blksize);
-    if (r != 0) {
-        ERROR("alloc block, errno=%d", r);
-        return -1;
-    }
 
-    memset(blkbuf, 0x0, thiz->blksize);
+    blkbuf = MY_Memalign(thiz->blksize);
+    if (blkbuf == NULL) return -1;
 
+    memset(blkbuf, 0x0, thiz->meta_size);
     r = seri_blk_meta(thiz, blkbuf);
     if (r != 0) goto _out;
 
@@ -180,13 +136,16 @@ static int save_block(T *thiz)
     r = wrap_block_crc(blkbuf, thiz->blksize);
     if (r == -1) goto _out;
 
-    r = io_write(thiz->fd, blkbuf, thiz->blksize);
-    if (r == -1) goto _out;
+    if (thiz->blktype != BTR_VAL_BLK) {
+        blkpage_t *bp = PCALLOC(SUPER->mpool, sizeof(blkpage_t));
+        bp->buf = blkbuf;
+        list_add_tail(&bp->page_node, &thiz->page_list);
+    } else {
+        r = io_write(thiz->fd, blkbuf, thiz->blksize);
+        if (r == -1) goto _out;
+    }
 
     thiz->blkcnt++;
-
-_out:
-    MY_Free(blkbuf);
 
     /* memories of key, value within each block are freed here */
     tchain = SELF->chain;
@@ -200,6 +159,11 @@ _out:
         tchain = tchain->next;
     }
  
+_out:
+    if (r < 0 || thiz->blktype == BTR_VAL_BLK) {
+        MY_AlignFree(blkbuf);
+    }
+
     if (r >= 0) {
         r = 0;
     }
@@ -212,7 +176,8 @@ static int new_block(T *thiz)
 {
     int r = 0;
 
-    SELF->chain = chain_alloc_link(SUPER->mpool);
+    POOL_RESET(SELF->blk_mp);
+    SELF->chain = chain_alloc_link(SELF->blk_mp);
     SELF->chain->buf = NULL;
     SELF->tchain = SELF->chain;
 
@@ -262,7 +227,7 @@ static int save_val_item(T *thiz, fkv_t *item)
 {
     int r;
     size_t vlen;
-    uint8_t *v;
+    char *v;
     chain_t *nchain;
 
     if (SELF->left == 0) {
@@ -339,7 +304,7 @@ static int save_index_item(T *thiz, fkv_t *item)
         item_size = seri_keyitem_size(item, &SELF->share_k, &item->kv->k);
     }
 
-    kmeta = PALLOC(SUPER->mpool, META_SIZE);
+    kmeta = PALLOC(SELF->blk_mp, META_SIZE);
 
     if (item->blktype != BTR_INDEX_BLK && !(item->kv->type & KV_OP_DEL)) {
         m = seri_kmeta(kmeta, META_SIZE, item);
@@ -368,6 +333,8 @@ static int save_index_item(T *thiz, fkv_t *item)
 static int save_filter_item(T *thiz, fkv_t *item)
 {
     /* TODO!! */
+    UNUSED(thiz);
+    UNUSED(item);
     return 0;
 }
 
@@ -424,4 +391,41 @@ blksaver_t *filter_blksaver_create(pool_t *mpool)
     return thiz;
 }
 
+/****************************************
+** basic function
+*****************************************/
+static void destroy(T *thiz)
+{
+    blkpage_t *p;
+
+    list_for_each_entry(p, &thiz->page_list, page_node) {
+        MY_AlignFree(p->buf);
+    }
+
+    if (SELF->blk_mp) POOL_DESTROY(SELF->blk_mp);
+    del_obj(thiz);
+}
+
+static int _init(T *thiz)
+{
+    INIT_LIST_HEAD(&thiz->page_list);
+
+    ADD_METHOD(destroy);
+    ADD_METHOD(flush);
+
+    return 0;
+}
+
+T *blksaver_create(pool_t *mpool)
+{
+    T *thiz = new_obj(mpool, sizeof(*thiz) + sizeof(*SELF));
+    if (thiz == NULL) return NULL;
+
+    SELF = (typeof(SELF))((char *)thiz + sizeof(*thiz));
+    SELF->blk_mp = POOL_CREATE(G_MPOOL_SIZE);
+
+    _init(thiz);
+
+    return thiz;           
+}
 

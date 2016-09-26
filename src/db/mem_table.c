@@ -3,14 +3,18 @@
 
 #define T mtb_t
 
+enum mt_e {
+    L_FLUSH_FIN = 1,
+};
+
 typedef struct mtkv_s {
     mkv_t *kv;
     struct mtkv_s *next;
 } mtkv_t;
 
 typedef struct mtkvlist_s {
-    size_t bytes;
     int len;
+    size_t bytes;
 
     mtkv_t *head;
     mtkv_t *tail;
@@ -19,15 +23,17 @@ typedef struct mtkvlist_s {
 } mtkvlist_t;
 
 struct mtb_pri {
+    int flag;
     uint32_t mtb_size;
     uint32_t bin_size;
+
+    pthread_mutex_t flush_mtx;
+    pthread_cond_t  flush_cond;
 
     mtkvlist_t *mm_kvlist;
     mtkvlist_t *im_kvlist;
 };
 
-struct mtbset_pri {
-};
 
 /****************************************
 ** function declaration
@@ -107,15 +113,10 @@ static int push_i(T *thiz, mkv_t *nkv, int safe)
     mkv_t *okv, *kv;
 
     /* nkv is a stack variable, change to heap */
-    kv = PALLOC(SUPER->mpool, sizeof(*kv));
+    kv = MY_Calloc(sizeof(*kv));
     memcpy(kv, nkv, sizeof(*kv));
 
-    if (safe) {
-        r = thiz->model->push(thiz->model, kv, (void **)&okv);
-    } else {
-        r = thiz->model->push_unsafe(thiz->model, kv, (void **)&okv);
-    }
-
+    r = thiz->model->push(thiz->model, kv, (void **)&okv);
     if (r == -1) return r;
 
     ASSERT( r == 0 || r == 1);
@@ -127,16 +128,18 @@ static int push_i(T *thiz, mkv_t *nkv, int safe)
     if (r == 1) { /* exist */
         if (okv->type & (KV_IN_MM_CACHE | KV_IN_IM_CACHE)) {
             okv->type |= KV_DEPRECATED;
-            if (!(okv->type & KV_OP_DEL) && okv->v.len >= thiz->conf->kv_bsize) {
+            if (!(okv->type & KV_OP_DEL)) {
                 SELF->mtb_size -= okv->v.len;
             }
         } else {
             MY_Free(okv->k.data);
 
-            if (!(okv->type & (KV_OP_DEL| KV_VTP_BINOFF))) {
+            if (!(okv->type & KV_OP_DEL)) {
                 SELF->mtb_size -= okv->v.len;
                 MY_Free(okv->v.data);
             }
+
+            MY_Free(okv);
         }
     } else {
         SELF->mtb_size += kv->k.len;
@@ -178,10 +181,6 @@ static int write_ready(T *thiz)
         r = 1;
     } else if (SELF->mm_kvlist != NULL 
             && SELF->mm_kvlist->bytes > thiz->conf->batch_size) {
-        change_mmkv_status(thiz);
-
-        SELF->im_kvlist = SELF->mm_kvlist;
-        SELF->mm_kvlist = kvlist_create(NULL);
         r = 1;
     }
     RWUNLOCK(&thiz->lock);
@@ -200,19 +199,15 @@ static void after_write(T *thiz)
         if (it->kv->type & KV_DEPRECATED) {
             MY_Free(it->kv->k.data);
 
-            if (!(it->kv->type & (KV_OP_DEL | KV_VTP_BINOFF))) {
+            if (!(it->kv->type & KV_OP_DEL)) {
                 MY_Free(it->kv->v.data);
             }
 
-            goto _next;
+            MY_Free(it->kv);
+            it = it->next;
+            continue;
         }
 
-        if (!(it->kv->type & KV_OP_DEL) && it->kv->v.len >= thiz->conf->kv_bsize) {
-            it->kv->type |= KV_VTP_BINOFF;
-            MY_Free(it->kv->v.data);
-        }
-
-_next:
         it->kv->type &= ~KV_DEPRECATED;
         it->kv->type &= ~KV_IN_MM_CACHE;
         it->kv->type &= ~KV_IN_IM_CACHE;
@@ -225,6 +220,18 @@ _next:
     RWUNLOCK(&thiz->lock);
 }
 
+static int switch_kvlist(T *thiz)
+{
+    if (SELF->im_kvlist == NULL) {
+        change_mmkv_status(thiz);
+
+        SELF->im_kvlist = SELF->mm_kvlist;
+        SELF->mm_kvlist = kvlist_create(NULL);
+    }
+
+    return 0;
+}
+
 static int write_bin(T *thiz)
 {
     ssize_t r = 0;
@@ -234,9 +241,12 @@ static int write_bin(T *thiz)
     mtkvlist_t *list;
     mtkv_t *it;
 
+    r = switch_kvlist(thiz);
+    if (r != 0) return -1;
+
     list = SELF->im_kvlist;
     it = list->head;
-    batch = thiz->conf->batch_size;
+    batch = (32 << 10);
     buf = MY_Malloc(batch);
     
     off = lseek(thiz->fd, 0, SEEK_CUR);
@@ -244,7 +254,6 @@ static int write_bin(T *thiz)
     while (it) {
         if (it->kv->type & KV_DEPRECATED) goto _next;
 
-        it->kv->off = off;
         kvsz = bin_kv_size(it->kv);
         off += kvsz;
 
@@ -256,11 +265,11 @@ static int write_bin(T *thiz)
                 sz = 0;
             }
 
-            bigbuf = PALLOC(list->mp, kvsz);
+            bigbuf = MY_Malloc(kvsz);
             seri_bin_kv(bigbuf, kvsz, it->kv);
             r = io_write(thiz->fd, buf, kvsz);
 
-            PFREE(list->mp, bigbuf);
+            MY_Free(bigbuf);
 
             if (r == -1) goto _out;
             else goto _next;
@@ -298,27 +307,39 @@ _out:
 
 static int flush(T *thiz)
 {
-    int r;
-
-    if (SELF->im_kvlist == NULL && SELF->mm_kvlist == NULL) {
-        INFO("nothing to flush");
-        return 0;
-    }
+    int r = 0;
 
     if (SELF->im_kvlist != NULL) {
         r = write_bin(thiz);
-        if (r != 0) return -1;
+        if (r != 0) goto _out;
     }
 
-    if (SELF->mm_kvlist != NULL) {
-        SELF->im_kvlist = SELF->mm_kvlist;
-        SELF->mm_kvlist = NULL;
-
+    if (SELF->mm_kvlist != NULL && SELF->mm_kvlist->head != NULL) {
         r = write_bin(thiz);
-        if (r != 0) return -1;
+        if (r != 0) goto _out;
     }
 
-    return 0;
+_out:
+    return r;
+}
+
+static void flush_wait(T *thiz)
+{
+    pthread_mutex_lock(&SELF->flush_mtx);
+    while(1) {
+        if (SELF->flag & L_FLUSH_FIN) break;
+        pthread_cond_wait(&SELF->flush_cond, &SELF->flush_mtx);
+    }
+    SELF->flag &= ~L_FLUSH_FIN;
+    pthread_mutex_unlock(&SELF->flush_mtx);
+}
+
+static void flush_notify(T *thiz)
+{
+    pthread_mutex_lock(&SELF->flush_mtx);
+    SELF->flag |= L_FLUSH_FIN;
+    pthread_cond_signal(&SELF->flush_cond);
+    pthread_mutex_unlock(&SELF->flush_mtx);
 }
 
 #define FLG_BIN_EOF 0
@@ -364,6 +385,8 @@ static int bin_read(char *buf, int len, int *off, mkv_t *kv)
 static int restore_bin_hdr(T *thiz, char *buf)
 {
     /* TODO!! */
+    UNUSED(thiz);
+    UNUSED(buf);
     return 0;
 }
 
@@ -374,7 +397,7 @@ static int restore(T *thiz)
     mkv_t *kv, *okv;
     struct stat st;
 
-    PROMPT("restoring %s", thiz->file);
+    INFO("restoring %s", thiz->file);
 
     fstat(thiz->fd, &st);
     if (st.st_size <= BIN_HEADER_SIZE) {
@@ -395,7 +418,7 @@ static int restore(T *thiz)
     off += BIN_HEADER_SIZE;
 
     while(1) {
-        kv = PALLOC(SUPER->mpool, sizeof(*kv));
+        kv = MY_Calloc(sizeof(*kv));
 
         r = bin_read(buf, st.st_size, &off, kv);
         if (r == RC_ERR) {
@@ -410,16 +433,17 @@ static int restore(T *thiz)
 
         if (r == 1) {
             MY_Free(okv->k.data);
-            if (okv->type & (KV_OP_DEL | KV_VTP_BINOFF)) {
+            if (okv->type & KV_OP_DEL) {
                 SELF->mtb_size -= okv->v.len;
             } else {
                 SELF->mtb_size += kv->v.len;
                 SELF->mtb_size -= okv->v.len;
                 MY_Free(okv->v.data);
             }
+            MY_Free(okv);
         } else {
             SELF->mtb_size += kv->k.len;
-            if (!(kv->type & (KV_OP_DEL | KV_VTP_BINOFF))) {
+            if (!(kv->type & KV_OP_DEL)) {
                 SELF->mtb_size += kv->v.len;
             }
         }
@@ -434,8 +458,7 @@ _out:
 
 static int   find(T *thiz, const mkey_t *k, mval_t *v)
 {
-    int r = 0;
-    mkv_t kv, kv2, *tkv;
+    mkv_t kv, *tkv;
 
     v->data = NULL;
     memcpy(&kv.k, k, sizeof(*k));
@@ -452,20 +475,7 @@ static int   find(T *thiz, const mkey_t *k, mval_t *v)
     v->len = tkv->v.len;
     v->data = MY_Malloc(v->len);
     
-    if (tkv->type & KV_VTP_BINOFF) {
-        memcpy(&kv2, tkv, sizeof(mkv_t));
-        kv2.v.data = v->data;
-        r = read_bin_val(thiz->fd, &kv2);
-
-        if (r == -1) {
-            MY_Free(v->data);
-            v->data = NULL;
-
-            goto _out;
-        }
-    } else {
-        memcpy(v->data, tkv->v.data, v->len);
-    }
+    memcpy(v->data, tkv->v.data, v->len);
     
 _out:
 
@@ -519,9 +529,11 @@ static void free_kv(void *d)
 
     MY_Free(kv->k.data);
 
-    if (!(kv->type & KV_OP_DEL) && !(kv->type & KV_VTP_BINOFF)) {
+    if (!(kv->type & KV_OP_DEL)) {
         MY_Free(kv->v.data);
     }
+
+    MY_Free(kv);
 }
 
 static int store_bin_hdr(T *thiz)
@@ -602,10 +614,11 @@ static int _init(T *thiz)
     ADD_METHOD(full);
     ADD_METHOD(restore);
     ADD_METHOD(write_ready);
-    ADD_METHOD(flush);
     ADD_METHOD(empty);
-
-    thiz->write = write_bin;
+    ADD_METHOD(write_bin);
+    ADD_METHOD(flush);
+    ADD_METHOD(flush_wait);
+    ADD_METHOD(flush_notify);
 
     return 0;
 }
@@ -617,10 +630,7 @@ T *mtb_create(pool_t *mpool)
 
     SELF = (typeof(SELF))((char *)thiz + sizeof(*thiz));
 
-    if (_init(thiz) != 0) {
-        del_obj(thiz);     
-        return NULL;       
-    }                      
+    _init(thiz);
 
     return thiz;           
 }

@@ -34,10 +34,13 @@ struct mtb_s {
     int   (*full)(T *thiz);
     int   (*restore)(T *thiz);
     int   (*write_ready)(T *thiz);
-    int   (*write)(T *thiz);
-    void  (*wait_write)(T *thiz);
-    int   (*flush)(T *thiz);
+    int   (*write_bin)(T *thiz);
     int   (*empty)(T *thiz);
+    int   (*mem_limit)(T *thiz);
+
+    int   (*flush)(T *thiz);
+    void  (*flush_wait)(T *thiz);
+    void  (*flush_notify)(T *thiz);
 };
 
 struct mtbset_s {
@@ -61,6 +64,10 @@ struct mtbset_s {
     mtb_t  *(*pop)(mtbset_t *thiz);
     mtb_t  *(*top)(mtbset_t *thiz);
     mtb_t  *(*tail)(mtbset_t *thiz);
+
+    int     (*flush)(mtbset_t *thiz);
+    void    (*flush_wait)(mtbset_t *thiz);
+    void    (*flush_notify)(mtbset_t *thiz);
 };
 
 T *mtb_create(pool_t *mpool);

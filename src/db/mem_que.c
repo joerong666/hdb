@@ -4,7 +4,14 @@
 #define T mtbset_t
 #define BIN_HEADER_SIZE 64
 
+enum mt_e {
+    L_FLUSH_FIN = 1
+};
+
 struct mtbset_pri {
+    int flag;
+    pthread_mutex_t flush_mtx;
+    pthread_cond_t  flush_cond;
 };
 
 /******************************************
@@ -129,6 +136,42 @@ static mtb_t   *pop(T *thiz)
     return item;
 }
 
+static int flush(T *thiz)
+{
+    int r = 0;
+    mtb_t *it;
+
+    RWLOCK_READ(&thiz->lock);
+    list_for_each_entry(it, &thiz->mlist, mnode) {
+        r = it->flush(it);
+        if (r != 0) break;
+
+        it->flush_notify(it);
+    }
+    RWUNLOCK(&thiz->lock);
+
+    return r;
+}
+
+static void flush_wait(T *thiz)
+{
+    pthread_mutex_lock(&SELF->flush_mtx);
+    while(1) {
+        if (SELF->flag & L_FLUSH_FIN) break;
+        pthread_cond_wait(&SELF->flush_cond, &SELF->flush_mtx);
+    }
+    SELF->flag &= ~L_FLUSH_FIN;
+    pthread_mutex_unlock(&SELF->flush_mtx);
+}
+
+static void flush_notify(T *thiz)
+{
+    pthread_mutex_lock(&SELF->flush_mtx);
+    SELF->flag |= L_FLUSH_FIN;
+    pthread_cond_signal(&SELF->flush_cond);
+    pthread_mutex_unlock(&SELF->flush_mtx);
+}
+
 static int _init(T *thiz)
 {
     RWLOCK_INIT(&thiz->lock);
@@ -144,6 +187,9 @@ static int _init(T *thiz)
     ADD_METHOD(pop    );
     ADD_METHOD(top    );
     ADD_METHOD(tail   );
+    ADD_METHOD(flush  );
+    ADD_METHOD(flush_wait);
+    ADD_METHOD(flush_notify);
 
     return 0;
 }

@@ -137,7 +137,7 @@ static ftb_t *tail(T *thiz)
 
 static ftb_t *search_cpct_tb(T *thiz, int cpct_type)
 {
-    ftb_t *ftb = NULL, *it = NULL;
+    ftb_t *ftb = NULL, *it = NULL, *it2 = NULL;
     hdr_block_t *hdr;
     conf_t *cnf;
 
@@ -149,11 +149,12 @@ static ftb_t *search_cpct_tb(T *thiz, int cpct_type)
             hdr = it->model->hdr;
             cnf = it->conf;
 
-            if (hdr->leaf_off > (cnf->ftb_size * 2)) {
+            if (hdr->fend_off > (cnf->ftb_size * 2)) {
                 ftb = it;
-                break;
             }
             RWUNLOCK(&it->model->lock);
+
+            if (ftb != NULL) break;
         }
 
         goto _out;
@@ -170,7 +171,45 @@ static ftb_t *search_cpct_tb(T *thiz, int cpct_type)
         goto _out;
     }
 
-_out:
+    if (cpct_type == CPCT_AJACENT) {
+        list_for_each_entry(it, &thiz->flist, fnode) {
+            if (list_is_last(&it->fnode, &thiz->flist)) continue;
+            
+            it2 = list_first_entry(&it->fnode, typeof(*ftb), fnode);
+            RWLOCK_READ(&it->model->lock);
+            RWLOCK_READ(&it2->model->lock);
+            size_t sz = it->model->hdr->fend_off + it2->model->hdr->fend_off;
+
+            if (sz < it->conf->ftb_size) {
+                ftb = it;
+            }
+            RWUNLOCK(&it2->model->lock);
+            RWUNLOCK(&it->model->lock);
+
+            if (ftb != NULL) break;
+        }
+
+        goto _out;
+    }
+
+    if (cpct_type == CPCT_SHRINK) {
+        list_for_each_entry(it, &thiz->flist, fnode) {
+            RWLOCK_READ(&it->model->lock);
+            hdr = it->model->hdr;
+            cnf = it->conf;
+
+            if (hdr->cpct_cnt > cnf->cpct_cnt) {
+                ftb = it;
+            }
+            RWUNLOCK(&it->model->lock);
+
+            if (ftb != NULL) break;
+        }
+
+        goto _out;
+    }
+ 
+ _out:
     RWUNLOCK(&thiz->lock);
     return ftb;
 }

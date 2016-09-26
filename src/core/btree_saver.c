@@ -1,29 +1,20 @@
 #include "inc.h"
 #include "btree_aux.h"
 #include "conf.h"
+#include "btree.h"
 #include "block_saver.h"
 #include "btree_saver.h"
-
-#if 0
-$ date -d '2016-01-01' +%s
-1451577600
-#endif
-#define BASE_TIMESTAMP 1451577600
 
 #define T btsaver_t
 #define DATA_BEG_OFF(_ms) (_ms - BTR_BLK_TAILER_SIZE)
 
 typedef struct fnode_s {
-    char fname[G_MEM_MID];
     int fd;
-    int blktype;
-    int blksize;
-    int meta_size;
+    blksaver_t *sv;
     struct fnode_s *next;
 } fnode_t;
 
 typedef struct flist_s {
-    int len;
     fnode_t *head;
     fnode_t *tail;
 } flist_t;
@@ -36,81 +27,6 @@ struct btsaver_pri {
     blksaver_t *lsv;    /* leaf saver */
 };
 
-/****************************************
-** function declaration
-*****************************************/
-static int   init(T *thiz);
-static void  destroy(T *thiz);
-static int   start(T *thiz);
-static int   save_kv(T *thiz, mkv_t *kv);
-static int   save_fkv(T *thiz, fkv_t *fkv);
-static int   flush(T *thiz);
-static void  finish(T *thiz);
-
-static int  _init(T *thiz);
-
-/****************************************
-** public function
-*****************************************/
-T *btsaver_create(pool_t *mpool)
-{
-    T *thiz = new_obj(mpool, sizeof(*thiz) + sizeof(*SELF));
-    if (thiz == NULL) return NULL;
-
-    SELF = (typeof(SELF))((char *)thiz + sizeof(*thiz));
-
-    if (_init(thiz) != 0) {
-        del_obj(thiz);     
-        return NULL;       
-    }                      
-
-    return thiz;           
-}
-
-/****************************************
-** private function
-*****************************************/
-static int _init(T *thiz)
-{
-    thiz->hdr = PCALLOC(SUPER->mpool, sizeof(hdr_block_t));
-
-    thiz->hdr->version = DB_MAJOR_VER;
-    thiz->hdr->blktype = BTR_HEADER_BLK;
-    strncpy(thiz->hdr->magic, DB_MAGIC_NUM, sizeof(thiz->hdr->magic));
-
-    ADD_METHOD(init);
-    ADD_METHOD(destroy);
-    ADD_METHOD(start);
-    ADD_METHOD(save_kv);
-    ADD_METHOD(save_fkv);
-    ADD_METHOD(flush);
-    ADD_METHOD(finish);
-
-    return 0;
-}
-
-static int init(T *thiz)
-{
-    int r;
-    struct stat st;
-
-    r = fstat(thiz->fd, &st);
-    if (r == -1) return -1;
-
-    if (st.st_size == 0) {
-        thiz->hdr->fend_off = BTR_HEADER_BLK_SIZE;
-    } else {
-        thiz->hdr->fend_off = st.st_size;
-    }
-
-    return 0;
-}
-
-static void destroy(T *thiz)
-{
-    del_obj(thiz);
-}
-
 static void append_file(T *thiz, fnode_t *fn)
 {
     flist_t *list = &SELF->flist;
@@ -122,8 +38,6 @@ static void append_file(T *thiz, fnode_t *fn)
         list->tail->next = fn;
         list->tail = fn;
     }
-
-    list->len++;
 }
 
 static fnode_t *gen_file(T *thiz)
@@ -131,9 +45,7 @@ static fnode_t *gen_file(T *thiz)
     fnode_t *fn = PALLOC(SUPER->mpool, sizeof(*fn));
     fn->next = NULL;
 
-    fn->fd = open_tmp_file(thiz->conf, fn->fname);
-    if (fn->fd == -1) fn = NULL;
-
+    fn->fd = thiz->fd;
     return fn;
 }
 
@@ -148,11 +60,9 @@ static blksaver_t *gen_blksaver(T *thiz, blksaver_t *(*create_saver)(pool_t *))
     sv = create_saver(NULL);
     sv->fd = fn->fd;
     sv->hdr = thiz->hdr;
+    fn->sv = sv;
 
     append_file(thiz, fn);
-    fn->blksize = sv->blksize;
-    fn->meta_size = sv->meta_size;
-    fn->blktype = sv->blktype;
 
     return sv;
 }
@@ -193,49 +103,46 @@ static blksaver_t *create_index_saver(T *thiz)
     return sv;
 }
 
+static int sync_pages(T *thiz, blksaver_t *sv)
+{
+    ssize_t r;
+    blkpage_t *bp;
+
+    list_for_each_entry(bp, &sv->page_list, page_node) {
+        if (sv->blktype == BTR_LEAF_BLK ||
+            sv->blktype == BTR_INDEX_BLK) thiz->hdr->node_cnt++;
+        if (sv->blktype == BTR_LEAF_BLK) thiz->hdr->leaf_cnt++;
+
+        r = io_write(sv->fd, bp->buf, sv->blksize);
+        if (r == -1) return -1;
+    }
+
+    return 0;
+}
+
 static int save_index(T *thiz)
 {
-    int r, fd, blksize, off, i;
+    int r, blksize, off, i;
     char *blkbuf = NULL, *bp;
     fnode_t *fn;
-    blksaver_t *sv = NULL;
-    struct stat st;
+    blkpage_t *bpg, *bpt;
+    blksaver_t *osv = NULL, *nsv = NULL;
     
-#if 0 /* if no val block, lseek may return 0, so use SEEK_CUR instead */
-    r = lseek(SELF->dsv->fd, 0, SEEK_END);
-#else
-    r = lseek(SELF->dsv->fd, 0, SEEK_CUR);
-#endif
-    if (r == -1) goto _out;
-
     /* move to leaf offset */
-    off = r;
-    thiz->hdr->leaf_off = off;
-
+    off = thiz->hdr->leaf_off;
     blksize = BTR_INDEX_BLK_SIZE;
-    r = MY_Memalign((void *)&blkbuf, getpagesize(), blksize);
-    if (r != 0) {
-        ERROR("alloc block, errno=%d", r);
-        return -1;
-    }
 
     /* read from leaf node file to construct internal node files */
     for (i = 1; ; i++) {
         fn = SELF->flist.tail;
-        fd = fn->fd;
-
-        r = fstat(fd, &st);
-        if (r == -1) goto _out;
+        osv = fn->sv;
 
         /* new index file will append to flist */
-        sv = create_index_saver(thiz);
-        lseek(fd, 0, SEEK_SET);
+        nsv = create_index_saver(thiz);
 
-        while ((r = io_read(fd, blkbuf, blksize)) == blksize) {
-            thiz->hdr->node_cnt++;
-            if (i == 1) thiz->hdr->leaf_cnt++;
-
-            bp = blkbuf + DATA_BEG_OFF(fn->meta_size);
+        list_for_each_entry(bpg, &osv->page_list, page_node) {
+            blkbuf = bpg->buf;
+            bp = blkbuf + DATA_BEG_OFF(osv->meta_size);
 
             mkv_t kv;
             fkv_t fkv;
@@ -245,7 +152,7 @@ static int save_index(T *thiz)
 
             /* current block info */
             fkv.kv = &kv;
-            fkv.blktype = fn->blktype;
+            fkv.blktype = osv->blktype;
 
             /* deserialize the first kv */
             if (deseri_kname(&fkv, bp, bp) == NULL) {
@@ -258,30 +165,32 @@ static int save_index(T *thiz)
             fkv.blkoff = off; /* point to child blkoff */
             off +=  blksize;
 
-            r = sv->save_item(sv, &fkv);
+            r = nsv->save_item(nsv, &fkv);
             if (r != 0) goto _out;
         }
 
-        if (r == -1) goto _out;
-        if (r != 0) {
-            ERROR("%d not equal blksize, errno=%d", r, errno);
-            r = -1;
-            goto _out;
+        list_for_each_entry_safe(bpg, bpt, &osv->page_list, page_node) {
+            MY_AlignFree(bpg->buf);
+            list_del(&bpg->page_node);
         }
 
-        sv->flush(sv);
-        if (sv->blkcnt <= 1) break; /* the root */
+        if (osv != SELF->lsv) {
+            osv->destroy(osv);
+            osv = NULL;
+        }
 
-        sv->destroy(sv);
-        sv = NULL;
+        nsv->flush(nsv);
+        r = sync_pages(thiz, nsv);
+        if (r != 0) goto _out;
+
+        if (nsv->blkcnt <= 1) break; /* the root */
     }
 
-    thiz->hdr->node_cnt++;
     thiz->hdr->tree_heigh = i;
 
 _out:   
-    if (blkbuf) MY_Free(blkbuf);
-    if (sv) sv->destroy(sv);
+    if (osv && osv != SELF->lsv) osv->destroy(osv);
+    if (nsv) nsv->destroy(nsv);
 
     if (r == -1) {
         ERROR("io error, errno=%d", errno);
@@ -292,83 +201,18 @@ _out:
     return r;
 }
 
-static int join_file(T *thiz, fnode_t *fn)
-{
-    ssize_t r;
-    char *blkbuf = NULL;
-
-    r = MY_Memalign((void *)&blkbuf, getpagesize(), fn->blksize);
-    if (r != 0) {
-        ERROR("alloc block, errno=%zd", r);
-        return -1;
-    }
-
-    while ((r = io_read(fn->fd, blkbuf, fn->blksize)) == fn->blksize) {
-        r = io_write(thiz->fd, blkbuf, fn->blksize);
-        if (r != fn->blksize) goto _out;
-    }
-
-_out:
-    if (r != 0) {
-        ERROR("io_size=%zd, errno=%d", r, errno);
-        r = -1;
-    }
-
-    MY_Free(blkbuf);
-    return r;
-}
-
-static int join_files(T *thiz)
-{
-    ssize_t r = 0;
-    fnode_t *fn;
-    struct stat st;
-
-#if 0 /* if no val block, lseek may return 0, so use SEEK_CUR instead */
-    r = lseek(thiz->fd, 0, SEEK_END);
-#else
-    r = lseek(thiz->fd, 0, SEEK_CUR);
-#endif
-    if (r == -1) goto _out;
-
-    thiz->hdr->fend_off = r;
-    fn = SELF->flist.head;
-
-    while (fn) {
-        r = lseek(fn->fd, 0, SEEK_SET);
-        if (r == -1) goto _out;
-
-        r = join_file(thiz, fn);
-        if (r != 0) goto _out;
-
-        fstat(fn->fd, &st);
-        thiz->hdr->fend_off += st.st_size;
-
-        fn = fn->next;
-    }
-
-    thiz->hdr->fend_off += BTR_HEADER_BLK_SIZE;
-
-_out:
-    if (r == -1) {
-        ERROR("io error, errno=%d", errno);
-    }
-
-    return r;
-}
-
 static int save_hdr(T *thiz)
 {
-    int r = 0;
+    ssize_t r = 0;
     char *blkbuf = NULL;
 
     if (thiz->hdr->key_cnt == 0) return 0;
 
-    r = MY_Memalign((void *)&blkbuf, getpagesize(), BTR_HEADER_BLK_SIZE);
-    if (r != 0) {
-        ERROR("alloc block, errno=%d", r);
-        return -1;
-    }
+    r = lseek(thiz->fd, 0, SEEK_CUR);
+    thiz->hdr->fend_off = r + BTR_HEADER_BLK_SIZE;
+
+    blkbuf = MY_Memalign(BTR_HEADER_BLK_SIZE);
+    if (blkbuf == NULL) return -1;
 
     seri_hdr(blkbuf, thiz->hdr);
     r = io_write(thiz->fd, blkbuf, BTR_HEADER_BLK_SIZE);
@@ -382,8 +226,10 @@ static int save_hdr(T *thiz)
     r = io_write(thiz->fd, blkbuf, BTR_HEADER_BLK_SIZE);
     if (r == -1) goto _out;
 
+    lseek(thiz->fd, thiz->hdr->fend_off, SEEK_SET);
+
 _out:
-    if (blkbuf) MY_Free(blkbuf);
+    if (blkbuf) MY_AlignFree(blkbuf);
 
     if (r == -1) {
         ERROR("io error, errno=%d", errno);
@@ -444,7 +290,7 @@ static int start(T *thiz)
 
 static int flush(T *thiz)
 {
-    int r = 0;
+    ssize_t r = 0;
     blksaver_t *dsv, *lsv;
 
     dsv = SELF->dsv;
@@ -456,10 +302,13 @@ static int flush(T *thiz)
     r = lsv->flush(lsv);
     if (r != 0) goto _out;
 
-    r = save_index(thiz);
+    r = lseek(thiz->fd, 0, SEEK_CUR);
+    thiz->hdr->leaf_off = r;
+
+    r = sync_pages(thiz, lsv);
     if (r != 0) goto _out;
 
-    r = join_files(thiz);
+    r = save_index(thiz);
     if (r != 0) goto _out;
 
     r = save_hdr(thiz);
@@ -472,20 +321,64 @@ _out:
 static void finish(T *thiz)
 {
     blksaver_t *dsv, *lsv;
-    fnode_t *fn;
 
     dsv = SELF->dsv;
     lsv = SELF->lsv;
 
     dsv->destroy(dsv);
     lsv->destroy(lsv);
+}
 
-    fn = SELF->flist.head;
-    while (fn != NULL) {
-        close(fn->fd);
-        remove(fn->fname);
+/****************************************
+** basic function
+*****************************************/
+static int init(T *thiz, btree_t *base)
+{
+    thiz->fd = base->wfd;
+    thiz->file = base->file;
+    thiz->conf = base->conf;
+#if 1
+    thiz->hdr->fend_off = base->hdr->fend_off;
+    thiz->hdr->cpct_cnt = base->hdr->cpct_cnt + 1;
+    thiz->hdr->version = DB_FILE_VERSION;
+    thiz->hdr->blktype = BTR_HEADER_BLK;
+    strncpy(thiz->hdr->magic, DB_MAGIC_NUM, sizeof(thiz->hdr->magic));
+#else
+    memcpy(thiz->hdr, base->hdr, sizeof(hdr_block_t));
+#endif
 
-        fn = fn->next;
-    }
+    return 0;
+}
+
+static void destroy(T *thiz)
+{
+    del_obj(thiz);
+}
+
+static int _init(T *thiz)
+{
+    thiz->hdr = PCALLOC(SUPER->mpool, sizeof(hdr_block_t));
+
+    ADD_METHOD(init);
+    ADD_METHOD(destroy);
+    ADD_METHOD(start);
+    ADD_METHOD(save_kv);
+    ADD_METHOD(save_fkv);
+    ADD_METHOD(flush);
+    ADD_METHOD(finish);
+
+    return 0;
+}
+
+T *btsaver_create(pool_t *mpool)
+{
+    T *thiz = new_obj(mpool, sizeof(*thiz) + sizeof(*SELF));
+    if (thiz == NULL) return NULL;
+
+    SELF = (typeof(SELF))((char *)thiz + sizeof(*thiz));
+
+    _init(thiz);
+
+    return thiz;           
 }
 

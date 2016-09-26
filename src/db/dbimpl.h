@@ -34,6 +34,7 @@ struct dbimpl_s {
     int   (*recover)(T *thiz);
     int   (*repaire)(T *thiz);
     int   (*flush)(T *thiz);   
+    int   (*checkpoint)(T *thiz);   
 
     void  (*close)(T *thiz);   
 
@@ -52,7 +53,6 @@ struct dbit_impl_s {
     T *container;
     mtb_t *mmtb;
     mtbset_t *imq;
-    ftb_t *ftb;
     mkey_t start;
     mkey_t stop;
     struct dbit_impl_pri *pri;

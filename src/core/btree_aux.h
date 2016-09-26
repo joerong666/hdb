@@ -43,7 +43,6 @@ typedef struct hdr_block_s {
 
     mkey_t beg;  /* begin key of key range */
     mkey_t end;  /* end key of key range */
-    char *start_map_buf;  /* start point of mmap buf for index info */
     char *map_buf;  /* mmap buf for index info */
 } hdr_block_t;
 
@@ -53,7 +52,7 @@ size_t io_pread(int fd, void *buf, size_t count, off_t offset);
 ssize_t io_pwrite(int fd, const void *buf, size_t count, off_t offset);
 
 int seri_keyitem_size(fkv_t *fkv, mkey_t *share, mkey_t *delt);
-char *deseri_kname(fkv_t *fkv, uint8_t *share, uint8_t *delt);
+char *deseri_kname(fkv_t *fkv, char *share, char *delt);
 char *deseri_key(fkv_t *fkv, char *share, char *delt);
 char *seri_kmeta(char *dst, size_t len, fkv_t *fkv);
 int seri_hdr(char *blkbuf, hdr_block_t *hdr);
@@ -64,7 +63,6 @@ int blk_crc32_check(char *blkbuf, size_t blksize);
 size_t bin_kv_size(mkv_t *kv);
 size_t seri_bin_kv(char *buf, size_t total, mkv_t *kv);
 ssize_t deseri_bin_kv(char *buf, off_t xoff, size_t len, mkv_t *kv);
-ssize_t read_bin_val(int fd, mkv_t *kv);
 char *move_to_klen_pos(int blktype, char *src);
 char *move_to_key_pos(int blktype, char *src);
 char *deseri_kmeta(fkv_t *fkv, char *src);

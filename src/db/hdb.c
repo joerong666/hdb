@@ -111,9 +111,8 @@ int dbe_version(char *path)
     snprintf(p, sizeof(p), "%s/"DB_DIR_BIN, path);
     if (access(p, F_OK) != 0) goto _out;
 
-    /* DBVER_V2 == DB_MAJOR_VER */
-    r = DB_MAJOR_VER;
-    PROMPT("consider as hidb_v%d", DB_MAJOR_VER);
+    r = DB_MARK_ID;
+    PROMPT("consider as hidb_v%d", DB_MARK_ID);
 
 _out:
     if (d) closedir(d);
@@ -161,6 +160,11 @@ int HIDB2(db_flush)(db_t *db)
     return db->dbimpl->flush(db->dbimpl);
 }
 
+int HIDB2(db_checkpoint)(db_t *db)
+{
+    return db->dbimpl->checkpoint(db->dbimpl);
+}
+
 void HIDB2(db_close)(db_t *db)
 {
     db->dbimpl->close(db->dbimpl);
@@ -173,6 +177,7 @@ void HIDB2(db_close)(db_t *db)
 void HIDB2(db_print_state)(db_t *db)
 {
     /* TODO!! */
+    UNUSED(db);
 }
 
 int HIDB2(db_put)(db_t *db, char *key, uint16_t key_size, char *val, uint32_t val_size)
@@ -187,6 +192,7 @@ int HIDB2(db_put)(db_t *db, char *key, uint16_t key_size, char *val, uint32_t va
     kv.v.data = val;
     kv.v.len = val_size;
 
+    DEBUG("put k=%.*s, vs=%d", key_size, key, val_size);
     return db->dbimpl->put(db->dbimpl, &kv);
 }
 
@@ -198,6 +204,7 @@ int HIDB2(db_del)(db_t *db, char *key, uint16_t key_size)
     k.data = MY_Malloc(key_size);
     memcpy(k.data, key, key_size);
     
+    DEBUG("del k=%.*s", key_size, key);
     return db->dbimpl->del(db->dbimpl, &k);
 }
 
@@ -231,6 +238,7 @@ int HIDB2(db_mput)(db_t *db, kvec_t *vec, size_t cnt)
     memset(kvs, 0x00, sizeof(kvs));
 
     for (i = 0; i < cnt; i++) {
+        DEBUG("mput k=%.*s, vs=%d", vec[i].ks, vec[i].k, vec[i].vs);
         kvs[i].k.data = vec[i].k;
         kvs[i].k.len = vec[i].ks;
         kvs[i].v.data = vec[i].v;
@@ -248,6 +256,7 @@ int HIDB2(db_mdel)(db_t *db, kvec_t *vec, size_t cnt)
     mkey_t keys[cnt];
     
     for (i = 0; i < cnt; i++) {
+        DEBUG("mdel k=%.*s", vec[i].ks, vec[i].k);
         keys[i].data = vec[i].k;
         keys[i].len = vec[i].ks;
     }
@@ -275,6 +284,7 @@ iter_t *HIDB2(db_pget)(db_t *db, char *kprefix, size_t ks)
     k.data = kprefix;
     k.len = (uint8_t)ks;
 
+    DEBUG("pget k=%.*s", ks, kprefix);
     return get_iter(db, &k, NULL);
 }
 
@@ -284,6 +294,7 @@ int HIDB2(db_pdel)(db_t *db, char *kprefix, size_t ks)
     pk.data = kprefix;
     pk.len = ks;
 
+    DEBUG("pdel k=%.*s", ks, kprefix);
     return db->dbimpl->pdel(db->dbimpl, &pk);
 }
 
@@ -304,6 +315,8 @@ int HIDB2(db_set_valfilter)(db_t *db, DB_VFILTER flt)
 int HIDB2(db_get_stats)(db_t *db, db_stats_t *stats)
 {
     /* TODO!! */
+    UNUSED(db);
+    UNUSED(stats);
     return 0;
 }
 
@@ -343,12 +356,15 @@ int HIDB2(db_iter)(iter_t *it, char **k, int *ks, char **v, int *vs, void *(*all
 int HIDB2(db_clear)(db_t *db)
 {
     /* TODO!! */
+    UNUSED(db);
     return 0;
 }
 
 int HIDB2(db_load_dir)(db_t *db, const char *dir)
 {
     /* TODO!! */
+    UNUSED(db);
+    UNUSED(dir);
     return 0;
 }
 
@@ -356,6 +372,7 @@ int HIDB2(db_load_dir)(db_t *db, const char *dir)
 int HIDB2(db_gtx_begin)(db_t *db)
 {
     /* TODO!! */
+    UNUSED(db);
     return 0;
 }
 
@@ -363,6 +380,7 @@ int HIDB2(db_gtx_begin)(db_t *db)
 int HIDB2(db_gtx_comit)(db_t *db)
 {
     /* TODO!! */
+    UNUSED(db);
     return 0;
 }
 
@@ -371,12 +389,16 @@ int HIDB2(db_gtx_comit)(db_t *db)
 
 int HIDB2(db_get_attr)(db_t *db, db_attr_t *attr)
 {
+    UNUSED(db);
+    UNUSED(attr);
     FUNC_DEPRECATED();
     return 0;
 }
 
 int HIDB2(db_clean_file)(db_t *db, struct tm *before)
 {
+    UNUSED(db);
+    UNUSED(before);
     FUNC_DEPRECATED();
     return 0;
 }
@@ -386,51 +408,62 @@ int HIDB2(db_clean_file)(db_t *db, struct tm *before)
  */
 int HIDB2(db_clean_oldest)(db_t *db, int cnt)
 {
+    UNUSED(db);
+    UNUSED(cnt);
     FUNC_DEPRECATED();
     return 0;
 }
 
 int HIDB2(db_freeze)(db_t *db)
 {
+    UNUSED(db);
     FUNC_DEPRECATED();
     return 0;
 }
 
 int HIDB2(db_unfreeze)(db_t *db)
 {
+    UNUSED(db);
     FUNC_DEPRECATED();
     return 0;
 }
 
 int HIDB2(db_get_level)(db_t *db)
 {
+    UNUSED(db);
     FUNC_DEPRECATED();
     return 2;
 }
 
 void HIDB2(db_set_debug_flag)(int debug_flag)
 {
+    UNUSED(debug_flag);
     FUNC_DEPRECATED();
 }
 
 void HIDB2(db_manual_purge)(db_t *db)
 {
+    UNUSED(db);
     FUNC_DEPRECATED();
 }
 
 int HIDB2(hidba_export)(const struct hidba_s *dba)
 {
+    UNUSED(dba);
     FUNC_DEPRECATED();
     return 0;
 }
 
 db_opt_t *HIDB2(db_get_opt)(db_t *db)
 {
+    UNUSED(db);
     FUNC_DEPRECATED();
     return NULL;
 }
 
 void HIDB2(db_set_opt)(db_t *db, const db_opt_t *opt)
 {
+    UNUSED(db);
+    UNUSED(opt);
     FUNC_DEPRECATED();
 }

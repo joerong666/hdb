@@ -1,9 +1,9 @@
 #ifndef _HDB_CONF_H_
 #define _HDB_CONF_H_
 
-#define DB_MAJOR_VER   2
-#define DB_VERSION     "2.0.0"
-#define DB_MAGIC_NUM   "hidb2" /* limit 8B */
+#include "version.h"
+
+#define DB_MARK_ID     2
 #define DB_MAX_LEVEL   2
 
 #define DB_DIR_DATA    "data"
@@ -64,22 +64,28 @@ typedef int (*KVCMP)(const void *old, const void *new);
 
 #ifndef DB_KVFILTER
 #define DB_KVFILTER
-typedef int32_t (*DB_KFILTER)(char *);
+typedef int32_t (*DB_KFILTER)(char *, size_t);
 typedef int32_t (*DB_VFILTER)(const char *, size_t, int *expire);
 #endif
+
+enum cnf_flg_e {
+    DBCNF_IO_DIRECT = 1,
+};
 
 struct conf_s {
     /* must be the first field */
     obj_t  super;
 
+    int    flag;
     int    db_level;
     int    imq_limit;
-    size_t mtb_size;  /* memtable size */
-    size_t ftb_size;  /* file table size */
-    size_t bin_size;  /* binglog size */
-    size_t kv_fsize;  /* val bigger than this saved as a single file */
-    size_t kv_bsize;  /* val bigger than this only stay in binlog */
     size_t batch_size;
+    size_t bin_size;        /* binglog size */
+    size_t mtb_size;        /* memtable size */
+    size_t bin_mxsize;      /* blocking if binglog reach this size */
+    size_t mtb_mxsize;      /* blocking if memtable reach this size */
+    size_t ftb_size;        /* file table size */
+    size_t ftb_min_kcnt;    
     size_t cpct_cnt;
     size_t tmp_fnum;
 
@@ -94,8 +100,10 @@ struct conf_s {
     int   (*init)(T *thiz);     /* init with default value */
     void  (*destroy)(T *thiz);
 
-    int   (*mkvflt)(T *thiz, mkv_t *kv);   
-    int   (*fkvflt)(T *thiz, fkv_t *fkv);   
+    int   (*mkeyflt)(T *thiz, mkv_t *kv);   
+    int   (*mvalflt)(T *thiz, mkv_t *kv);   
+    int   (*fkeyflt)(T *thiz, fkv_t *fkv);   
+    int   (*fvalflt)(T *thiz, fkv_t *fkv);   
 };
 
 T *conf_create(pool_t *mpool);

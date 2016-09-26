@@ -5,6 +5,7 @@
 
 struct htiter_pri {
     int flag;
+    int next_flag;
     int sub_itscnt;
 
     skiter_t *cur_sit;
@@ -15,6 +16,8 @@ static int has_next(htiter_t *thiz)
     int r = 0, i;
     skiter_t *sit;
     skiter_t *cur_sit = SELF->cur_sit;
+
+    if (SELF->next_flag) return 1;
 
     if (cur_sit != NULL && cur_sit->has_next(cur_sit)) {
         r = 1;
@@ -35,6 +38,7 @@ static int has_next(htiter_t *thiz)
         if (cur_sit == NULL) return 0;
     }
 
+    SELF->next_flag = r;
     return r;
 }
 
@@ -44,6 +48,8 @@ static int next(htiter_t *thiz)
     skiter_t *sit;
     skiter_t *cur_sit = SELF->cur_sit;
     void *cur_d, *var_d;
+
+    SELF->next_flag = 0;
 
     /* select the smallest as current sit */
     for (i = 0; i < SELF->sub_itscnt; i++) {

@@ -1,3 +1,10 @@
+PF=$(shell getconf LONG_BIT)
+ifeq ($(PF),32)
+PF_CFLAGS = "-march=i686"
+else
+PF_CFLAGS = 
+endif
+
 BASE_DIR=../..
 
 ALLOC_PATH=$(BASE_DIR)/depend/jemalloc
@@ -18,11 +25,9 @@ LINK_DEP= -lpthread
 INCLUDE = $(INC_DEP)
 LIB = $(LINK_DEP)
 
-TEST_CCFLAG = -DFOR_UNIT_TEST
-
 #CCFLAG = -std=c99 -O2 -fprofile-generate -g -pg -Wall -W -D_XOPEN_SOURCE -D__USE_BSD
 #CCFLAG =  -ggdb -fno-omit-frame-pointer -Wno-write-strings -Wall  -Wextra -Winline -Wunused -Wfloat-equal -Wmissing-include-dirs -Wformat=2 
-CCFLAG = -DFOR_SINGLE_DS -g3 -Wno-write-strings -Wall  -Wextra -Winline -Wunused -Wfloat-equal -Wmissing-include-dirs -Wformat=2 
+CCFLAG = $(PF_CFLAGS) -DFOR_SINGLE_DS -g3 -Wno-write-strings -Wall  -Wextra -Winline -Wunused -Wfloat-equal -Wmissing-include-dirs -Wformat=2 
 #CCFLAG = -g3 -Wno-write-strings -Wall  -Wextra -Winline -Wunused -Wfloat-equal -Wmissing-include-dirs -Wformat=2 
 #CCFLAG = -O2 -Wno-write-strings -Wall  -Wextra -Winline -Wunused -Wfloat-equal -Wmissing-include-dirs -Wformat=2 
 
@@ -67,10 +72,16 @@ BUILD_OBJ=build/obj
 BUILD_LIB=build/lib
 LIBHIDB2=libhidb.a
 
+TEST_CCFLAG = -DFOR_UNIT_TEST
 
 mklib: 
 	-mkdir -p $(BUILD_INC) $(BUILD_OBJ) $(BUILD_LIB)
-	$(CC) -c -DUSE_ZMALLOC $(TEST_CCFLAG) $(CCFLAG) $(INC) $(SRC)
+	$(CC) -c -DUSE_ZMALLOC $(CCFLAG) $(INC) $(SRC)	\
+	$(UTIL_FLAGS)   					\
+	$(PF_FLAGS)   						\
+	$(BL_FLAGS)   						\
+	$(JE_FLAGS)  
+
 	mv *.o $(BUILD_OBJ)
 	ar rcs $(BUILD_LIB)/$(LIBHIDB2) $(BUILD_OBJ)/*.o
 	cp db/db.h db/db_com_def.h $(BUILD_INC)
@@ -82,12 +93,16 @@ mkar:
 	ar rcs $(BUILD_LIB)/$(LIBHIDB2) $(BUILD_OBJ)/*.o
 	cp db/db.h db/db_com_def.h $(BUILD_INC)
 
-mkexe: mkar
+mktest: mkar
 	$(CC) -o $(BIN_TARGET) test/*.c $(BUILD_LIB)/$(LIBHIDB2) -Itest $(INC) \
 		$(TEST_CCFLAG) $(CCFLAG) $(DBV1_OPT) $(LIB_DEP)
+
+mkprod: mklib
+	$(CC) -DUSE_ZMALLOC -o $(BIN_TARGET) test/*.c $(BUILD_LIB)/$(LIBHIDB2) -Itest $(INC) \
+		$(CCFLAG) $(DBV1_OPT) $(LIB_DEP)
 
 clean:
 	-rm build -r
 
-.PHONY: mkexe clean 
+.PHONY: mktest clean 
 

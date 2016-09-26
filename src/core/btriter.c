@@ -14,6 +14,7 @@ struct btriter_pri {
     uint32_t leaf;
     uint32_t max_leaf;
     uint32_t bfsize;
+    int next_flag;
 
     char *kshare;
     char *buf;
@@ -129,6 +130,8 @@ static int has_next(T *thiz)
 {
     int r;
 
+    if (SELF->next_flag) return 1;
+
     if (SELF->flag & IT_BEG) {
         if (thiz->start != NULL) {
             r = thiz->container->krange_cmp(thiz->container, thiz->start);
@@ -143,18 +146,25 @@ static int has_next(T *thiz)
         SELF->flag &= ~IT_BEG;
 
         SELF->leaf = search_first_leaf(thiz);
-        return seek_first(thiz, SELF->leaf, SELF->next_item);
+        r = seek_first(thiz, SELF->leaf, SELF->next_item);
+
+        SELF->next_flag = r;
+        return r;
     }
 
-    return seek_next(thiz); 
+    r = seek_next(thiz); 
+    SELF->next_flag = r;
+
+    return r;
 }
 
 static fkv_t *gen_item(T *thiz)
 {
     fkv_t *item;
 
-    item = PCALLOC(SUPER->mpool, sizeof(fkv_t));
-    item->kv = PCALLOC(SUPER->mpool, sizeof(mkv_t));
+    UNUSED(thiz);
+    item = MY_Calloc(sizeof(fkv_t) + sizeof(mkv_t));
+    item->kv = (mkv_t *)((char *)item + sizeof(fkv_t));
     item->blktype = BTR_LEAF_BLK;
 
     return item;
@@ -162,6 +172,9 @@ static fkv_t *gen_item(T *thiz)
 
 static int next(T *thiz)
 {
+    MY_Free(SELF->cur_item);
+
+    SELF->next_flag = 0;
     SELF->cur_item = SELF->next_item;
     SELF->buf += SELF->bfsize;
     SELF->kidx++;
@@ -197,6 +210,9 @@ static int init(T *thiz)
 
 static void destroy(T *thiz)
 {
+    MY_Free(SELF->cur_item);
+    MY_Free(SELF->next_item);
+
     del_obj(thiz);
 }
 

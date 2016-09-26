@@ -39,9 +39,9 @@ or:
                                \/
                            MEATA Part2
 
-Header block format(512B):
+Header block format(4096B):
         extend for file head/tail block:
-        |crc32(4B)|blk_type(1B)|magic(8B)|version(2B)
+        |crc32(4B)|blk_type(1B)|magic(8B)|version(1B)
         |k_cnt(4B)|tree_heigh(1B)|compact_cnt(1B)
         |beg_ks(1B)|end_ks(1B)|beg_key|end_key
         |fend_off(v4B)|leaf_off(v4B)|node_cnt(v4B)|leaf_cnt(v4B)

@@ -45,11 +45,13 @@
 } while(0)
 
 typedef struct dbstat_s {
+    uint64_t total_get;
     uint64_t total_put;
     uint64_t total_del;
     uint64_t total_mput;
     uint64_t total_mdel;
     uint64_t total_pdel;
+    uint64_t total_pget;
     uint64_t total_rd;
     uint64_t total_wr;
 } dbstat_t;
@@ -96,11 +98,13 @@ static char *g_dirs[] = { "", DB_DIR_DATA, DB_DIR_TMP, DB_DIR_BAK,
 enum notify_e {
     NTF_TIMER     = 1,
     NTF_WRITE_BIN = 1 << 1,
-    NTF_FLUSH_BIN = 1 << 2,
-    NTF_MTB_DUMP  = 1 << 3,
-    NTF_COMPACT   = 1 << 4,
-    NTF_PROT      = 1 << 5,
-    NTF_DBDESTROY = 1 << 6,
+    NTF_FLUSH_MMT = 1 << 2,
+    NTF_FLUSH_IMQ = 1 << 3,
+    NTF_FLUSH_DB  = 1 << 4,
+    NTF_MTB_DUMP  = 1 << 5,
+    NTF_COMPACT   = 1 << 6,
+    NTF_PROT      = 1 << 7,
+    NTF_DBDESTROY = 1 << 8,
     NTF_MAX,
 };
 
@@ -164,12 +168,21 @@ static void notify(T *thiz, int notice)
         break;
 #endif
 #if 1
-    case NTF_FLUSH_BIN:
-        ATTACH_NOTICE(notice);
+    case NTF_FLUSH_MMT:
         if (0 == pthread_mutex_trylock(&SELF->bin_mtx)) {
+            ATTACH_NOTICE(notice);
             pthread_cond_signal(&SELF->bin_cond);
             pthread_mutex_unlock(&SELF->bin_mtx);
         }
+        break;
+#endif
+#if 1
+    case NTF_FLUSH_IMQ:
+    case NTF_FLUSH_DB:
+        pthread_mutex_lock(&SELF->bin_mtx);
+        ATTACH_NOTICE(notice);
+        pthread_cond_signal(&SELF->bin_cond);
+        pthread_mutex_unlock(&SELF->bin_mtx);
         break;
 #endif
 #if 1
@@ -203,7 +216,7 @@ static void notify(T *thiz, int notice)
         pthread_mutex_unlock(&SELF->prot_mtx);
         break;
     case NTF_DBDESTROY:
-        SELF->notice |= NTF_DBDESTROY;
+        ATTACH_NOTICE(notice);
         pthread_cond_signal(&SELF->bin_cond);
         pthread_cond_signal(&SELF->dump_cond);
         pthread_cond_signal(&SELF->compact_cond);
@@ -220,7 +233,7 @@ static int prepare_dirs(T *thiz)
 
     for (i = 0; i < (int)ARR_LEN(g_dirs); i++) {
         AB_PATH(fname, thiz->conf, g_dirs[i]);
-        PROMPT("mkdir %s if not exist", fname);
+        INFO("mkdir %s if not exist", fname);
 
         if (mkdir(fname, 0775) == -1 && errno != EEXIST) {
             r = -1;
@@ -234,20 +247,19 @@ static int prepare_dirs(T *thiz)
 static int prepare_files(T *thiz)
 {
     /* TODO!! create some file needed */ 
-
+    UNUSED(thiz);
     return 0;
 }
 
 static int prepare_mtb(T *thiz)
 {
-    int r;
+    mtb_t *m;
 
-    mtb_t *m = mtb_create(NULL);
+    m = mtb_create(NULL);
 
     BIN_FILE(m->file, thiz->conf, next_fnum(thiz));
     m->conf = thiz->conf;
-    r = m->init(m);
-    if (r != 0) return r;
+    m->init(m);
 
     pthread_mutex_lock(&SELF->rw_lock);
     SELF->mmtb = m;
@@ -264,7 +276,7 @@ static void load_protect(T *thiz)
     while(1) {
         len = SELF->imq->len(SELF->imq);
         if (len > thiz->conf->imq_limit) {
-            PROMPT("len of imq exceed %d, block push!", thiz->conf->imq_limit);
+            ERROR("len of imq exceed %d, block push!", thiz->conf->imq_limit);
             pthread_cond_wait(&SELF->prot_cond, &SELF->prot_mtx);
         } else {
             break;
@@ -277,9 +289,30 @@ static int db_flush(T *thiz)
 {
     int r = 0;
 
-    pthread_mutex_lock(&SELF->bin_mtx);
-    r = SELF->mmtb->flush(SELF->mmtb);
-    pthread_mutex_unlock(&SELF->bin_mtx);
+    notify(thiz, NTF_FLUSH_DB);
+    SELF->imq->flush_wait(SELF->imq);
+    SELF->mmtb->flush_wait(SELF->mmtb);
+
+    return r;
+}
+
+static int checkpoint(T *thiz)
+{
+    int r = 0;
+
+    PROMPT("doing checkpoint");
+    r = db_flush(thiz);
+    if (r != 0) return -1;
+
+    if (SELF->mmtb->empty(SELF->mmtb)) return 0;
+
+    r = SELF->imq->push(SELF->imq, SELF->mmtb);
+    if (r != 0) return -1;
+
+    r = prepare_mtb(thiz);
+    if (r != 0) return -1;
+
+    notify(thiz, NTF_MTB_DUMP);
 
     return r;
 }
@@ -289,36 +322,33 @@ static int   switch_mtb(T *thiz)
     int r = 0;
 
     if (SELF->mmtb->full(SELF->mmtb)) {
-        db_flush(thiz);
-
         load_protect(thiz);
 
         r = SELF->imq->trypush(SELF->imq, SELF->mmtb);
-        if (r != 0) {
-            DEBUG("imq's lock not ready");
-            r = 0;
-            goto _out;
+        if (r == 0) {
+            prepare_mtb(thiz);
+        } else {
+            INFO("mmtb full, but imq'lock not ready");
         }
-
-        r = prepare_mtb(thiz);
-        if (r != 0) goto _out;
 
         notify(thiz, NTF_MTB_DUMP);
     }
 
-_out:
-    return r;
+    return 0;
 }
 
 static uint64_t get_seq(T *thiz)
 {
-    if (SELF->seq == 0) {
+    uint64_t seq = SELF->seq;
+
+    if (seq == 0) {
         struct timeval tv;
         gettimeofday(&tv, NULL);
-        SELF->seq = (tv.tv_sec - BASE_TIMESTAMP) * 1e3 + tv.tv_usec * 1e-3;
+        seq = (tv.tv_sec - BASE_TIMESTAMP) * 1e3 + tv.tv_usec * 1e-3;
+        atomic_casv(SELF->seq, seq);
     }
 
-    return SELF->seq;
+    return seq;
 }
 
 static void timer_thread(T *thiz)
@@ -337,13 +367,23 @@ static void timer_thread(T *thiz)
         atomic_casv(SELF->seq, seq);
 
         if (++i % 1000 == 0) {
+            /* tps <= 10, notify flush */
             if ((DB_STATS_FETCH(wr) - total_wr) <= 10) {
-                INFO("tps <= 10, notify flush");
-                notify(thiz, NTF_FLUSH_BIN);
+                notify(thiz, NTF_FLUSH_MMT);
             }
 
             i = 0;
             total_wr = SELF->stats.total_wr;
+
+            INFO("put:%"PRIu64",del:%"PRIu64",mput:%"PRIu64
+                 ",mdel:%"PRIu64",pdel:%"PRIu64",rd:%"PRIu64
+                 ,SELF->stats.total_put
+                 ,SELF->stats.total_del
+                 ,SELF->stats.total_mput
+                 ,SELF->stats.total_mdel
+                 ,SELF->stats.total_pdel
+                 ,SELF->stats.total_rd
+                 );
         }
 
         usleep(1000);
@@ -355,7 +395,7 @@ static int   put_i(T *thiz, mkv_t *kv)
     int r;
 
     if (kv->k.len >= G_KSIZE_LIMIT) {
-        ERROR("klen=%u too big", kv->k.len);
+        ERROR("klen=%u exceed %d", kv->k.len, G_KSIZE_LIMIT);
         return -1;
     }
 
@@ -460,6 +500,10 @@ static int   pdel(T *thiz, mkey_t *prefix)
     mkv_t kv;
 
     DBWR_STATS_INCR(pdel);
+
+    r = switch_mtb(thiz);
+    if (r != 0) return r;
+
     seq = get_seq(thiz);
 
     RWLOCK_WRITE(&SELF->mmtb->lock);
@@ -589,15 +633,15 @@ static int   recover_bl(T *thiz)
             continue;
         }
 
-        if (SELF->max_fnum < fnum) SELF->max_fnum = fnum;
-
         BIN_PATH(fname, thiz->conf, ent->d_name);
         stat(fname, &st);
         if (st.st_size <= 0) {
-            ERROR("%s empty, remove it", fname);
+            ERROR("%s empty, remove", fname);
             remove(fname);
             continue;
         }
+
+        if (SELF->max_fnum < fnum) SELF->max_fnum = fnum;
 
         mtb = mtb_create(NULL);
         mtb->conf = thiz->conf;
@@ -656,8 +700,6 @@ static int   recover_dt(T *thiz)
             continue;
         }
 
-        if (SELF->max_fnum < fnum) SELF->max_fnum = fnum;
-
         if (level >= thiz->conf->db_level) {
             ERROR("%s dblevel=%d exceed %d, skip", ent->d_name, level, thiz->conf->db_level);
             continue;
@@ -666,10 +708,12 @@ static int   recover_dt(T *thiz)
         DATA_PATH(fname, thiz->conf, ent->d_name);
         stat(fname, &st);
         if (st.st_size <= 0) {
-            ERROR("%s empty, remove it", fname);
+            ERROR("%s empty, remove", fname);
             remove(fname);
             continue;
         }
+
+        if (SELF->max_fnum < fnum) SELF->max_fnum = fnum;
 
         ftb = ftb_create(NULL);
         ftb->conf = thiz->conf;
@@ -745,26 +789,44 @@ static int cleanup(T *thiz)
 static int repaire(T *thiz)
 {
     /* TODO!! repaire db if file corrupted */
+    UNUSED(thiz);
     return 0;
 }
 
 static void ntf_write_bin(T *thiz)
 {
-    while (1) {
-        if (SELF->notice & NTF_DBDESTROY) {
-            db_flush(thiz);
-            break;
-        }
+    mtb_t *mmtb;
 
+    while (1) {
         pthread_mutex_lock(&SELF->bin_mtx);
         while (1) {
-            if (SELF->notice & NTF_DBDESTROY) break;
+            pthread_mutex_lock(&SELF->rw_lock);
+            mmtb = SELF->mmtb;
+            pthread_mutex_unlock(&SELF->rw_lock);
+            
+            if (mmtb->write_ready(mmtb)) {
+                mmtb->write_bin(mmtb);
+            }
 
-            if (SELF->notice & NTF_FLUSH_BIN) {
-                SELF->mmtb->flush(SELF->mmtb);
-                DETACH_NOTICE(NTF_FLUSH_BIN);
-            } else if (SELF->mmtb->write_ready(SELF->mmtb)) {
-                SELF->mmtb->write(SELF->mmtb);
+            if (SELF->notice & (NTF_FLUSH_MMT | NTF_FLUSH_DB)) {
+                mmtb->flush(mmtb);
+                DETACH_NOTICE(NTF_FLUSH_MMT);
+            }
+
+            if (SELF->notice & (NTF_FLUSH_IMQ | NTF_FLUSH_DB)) {
+                SELF->imq->flush(SELF->imq);
+                DETACH_NOTICE(NTF_FLUSH_IMQ);
+            }
+
+            if (SELF->notice & NTF_FLUSH_DB) {
+                DETACH_NOTICE(NTF_FLUSH_DB);
+                SELF->imq->flush_notify(SELF->imq);
+                mmtb->flush_notify(mmtb);
+            }
+
+            if (SELF->notice & NTF_DBDESTROY) {
+                pthread_mutex_unlock(&SELF->bin_mtx);
+                return;
             }
 
             pthread_cond_wait(&SELF->bin_cond, &SELF->bin_mtx);
@@ -781,6 +843,9 @@ static void do_mtb_dump(T *thiz)
     ftb_t *ftb = NULL;
 
     mtb = SELF->imq->top(SELF->imq);
+
+    notify(thiz, NTF_FLUSH_IMQ);
+    mtb->flush_wait(mtb);
 
     ftb = ftb_create(NULL);
     ftb->conf = thiz->conf;
@@ -839,12 +904,14 @@ struct cpct_job_s {
 
 static void compact_job(struct cpct_job_s *job)
 {
+    CONSOLE_DEBUG("compact %s, type=%d", job->cpct->src_ftb->file, job->cpct->type);
     job->cpct->compact(job->cpct);
 
     pthread_mutex_lock(&job->db->pri->compact_mtx);
     ATOMIC_DETACH_FLAG(job->db->pri->flag, job->cpct->type);
     pthread_mutex_unlock(&job->db->pri->compact_mtx);
 
+    CONSOLE_DEBUG("compact fin");
     notify(job->db, NTF_COMPACT);
     job->cpct->destroy(job->cpct);
 }
@@ -857,7 +924,7 @@ static int raise_cpct_major(T *thiz)
     ftbset_t *src_fset, *dst_fset;
     ftb_t *ftb;
 
-    if (SELF->flag & (CPCT_SPLIT | CPCT_REMOTE | CPCT_MAJOR)) return 0;
+    if (SELF->flag & (CPCT_SPLIT | CPCT_SHRINK | CPCT_MAJOR | CPCT_AJACENT)) return 0;
 
     for (i = 0; i < thiz->conf->db_level - 1; i++) {
         src_fset = thiz->fsets[i];
@@ -890,28 +957,34 @@ static int raise_cpct_major(T *thiz)
     return r;
 }
 
-static int raise_cpct_split(T *thiz)
+static int raise_cpct_split(T *thiz, int op)
 {
     int r = 0, i;
     struct cpct_job_s *job;
     compactor_t *cpct;
     ftbset_t *fset;
-    ftb_t *ftb;
+    ftb_t *ftb = NULL;
 
-    if (SELF->flag & (CPCT_REMOTE | CPCT_MAJOR | CPCT_SPLIT)) return 0;
+    if (SELF->flag & (CPCT_SHRINK | CPCT_MAJOR | CPCT_SPLIT | CPCT_AJACENT)) return 0;
 
     for (i = 1; i < thiz->conf->db_level; i++) {
         fset = thiz->fsets[i];
 
-        ftb = fset->search_cpct_tb(fset, CPCT_SPLIT);
+        if (op == CPCT_SPLIT) {
+            ftb = fset->search_cpct_tb(fset, CPCT_SPLIT);
+        } else if (thiz->fsets[0]->len(thiz->fsets[0]) == 0) {
+            ftb = fset->search_cpct_tb(fset, CPCT_SHRINK);
+        }
+
         if (ftb == NULL) continue;
 
-        TRACE("%s", __func__);
         cpct = compactor_create(NULL);
 
-        cpct->type = CPCT_SPLIT;
+        cpct->type = op;
         cpct->nfnum1 = next_fnum(thiz);
-        cpct->nfnum2 = next_fnum(thiz);
+        if (op == CPCT_SPLIT) {
+            cpct->nfnum2 = next_fnum(thiz);
+        }
 
         cpct->conf = thiz->conf;
         cpct->src_ftb = ftb;
@@ -931,17 +1004,50 @@ static int raise_cpct_split(T *thiz)
     return r;
 }
 
+static int raise_cpct_ajacent(T *thiz)
+{
+    int r = 0, i;
+    struct cpct_job_s *job;
+    compactor_t *cpct;
+    ftbset_t *src_fset, *dst_fset;
+    ftb_t *ftb;
+
+    if (SELF->flag & (CPCT_SPLIT | CPCT_SHRINK | CPCT_MAJOR | CPCT_AJACENT)) return 0;
+
+    do {
+        i = thiz->conf->db_level - 1;
+
+        src_fset = thiz->fsets[i];
+        dst_fset = thiz->fsets[i];
+
+        ftb = src_fset->search_cpct_tb(src_fset, CPCT_AJACENT);
+        if (ftb == NULL) continue;
+
+        TRACE("%s", __func__);
+        cpct = compactor_create(NULL);
+
+        cpct->type = CPCT_AJACENT;
+        cpct->conf = thiz->conf;
+        cpct->src_ftb = ftb;
+        cpct->src_fset = src_fset;
+        cpct->dst_fset = dst_fset;
+
+        job = PALLOC(cpct->super.mpool, sizeof(*job));
+        job->db = thiz;
+        job->cpct = cpct;
+
+        thpool_add_job(SELF->thpool, (void *(*)(void *))compact_job, job);
+
+        r = 1;
+        break;
+    } while(0);
+
+    return r;
+}
+
 static int raise_cpct_L0(T *thiz)
 {
     if (SELF->flag & CPCT_L0) return 0;
-
-    /* TODO!! */
-    return 0;
-}
-
-static int raise_cpct_remote(T *thiz)
-{
-    if (SELF->flag & (CPCT_SPLIT | CPCT_REMOTE | CPCT_MAJOR)) return 0;
 
     /* TODO!! */
     return 0;
@@ -953,15 +1059,22 @@ static void raise_compact(T *thiz)
 
     r = raise_cpct_L0(thiz);
     if (r) SELF->flag |= CPCT_L0; 
-
-    r = raise_cpct_split(thiz);
+#if 1
+    r = raise_cpct_split(thiz, CPCT_SPLIT);
     if (r) SELF->flag |= CPCT_SPLIT; 
-
+#endif
+#if 1
     r = raise_cpct_major(thiz);
     if (r) SELF->flag |= CPCT_MAJOR; 
-
-    r = raise_cpct_remote(thiz);
-    if (r) SELF->flag |= CPCT_REMOTE; 
+#endif
+#if 1
+    r = raise_cpct_ajacent(thiz);
+    if (r) SELF->flag |= CPCT_AJACENT; 
+#endif
+#if 1
+    r = raise_cpct_split(thiz, CPCT_SHRINK);
+    if (r) SELF->flag |= CPCT_SHRINK; 
+#endif
 }
 
 static void ntf_compact(T *thiz)
@@ -985,12 +1098,14 @@ static dbit_impl_t *get_iter(T *thiz, mkey_t *start, mkey_t *stop)
     it->container = thiz;
 
     if (start != NULL) {
+        DEBUG("it start=%.*s", start->len, start->data);
         it->start.len = start->len;
         it->start.data = PALLOC(it->super.mpool, start->len);
         memcpy(it->start.data, start->data, start->len);
     }
 
     if (stop != NULL) {
+        DEBUG("it stop=%.*s", start->len, start->data);
         it->stop.len = stop->len;
         it->stop.data = PALLOC(it->super.mpool, stop->len);
         memcpy(it->stop.data, stop->data, stop->len);
@@ -998,10 +1113,10 @@ static dbit_impl_t *get_iter(T *thiz, mkey_t *start, mkey_t *stop)
 
     pthread_mutex_lock(&SELF->rw_lock);
     it->mmtb = SELF->mmtb;
-    it->imq = SELF->imq;
-    it->ftb = thiz->fsets[0]->tail(thiz->fsets[0]);
-    it->init(it);
     pthread_mutex_unlock(&SELF->rw_lock);
+
+    it->imq = SELF->imq;
+    it->init(it);
 
     return it;
 }
@@ -1084,17 +1199,26 @@ static void destroy(T *thiz)
     int i;
     ftbset_t *fst;
 
+    SAY_DEBUG("flush db");
+    db_flush(thiz);
     notify(thiz, NTF_DBDESTROY);
+
+    SAY_DEBUG("destroy thread pool");
     thpool_destroy(SELF->thpool);
 
+    SAY_DEBUG("destroy file que");
     for (i = 0; i < thiz->conf->db_level; i++) {
         fst = thiz->fsets[i];
         fst->destroy(fst);
     }
 
+    SAY_DEBUG("destroy imq");
     SELF->imq->destroy(SELF->imq);
+
+    SAY_DEBUG("destroy mmtb");
     SELF->mmtb->destroy(SELF->mmtb);
 
+    SAY_DEBUG("destroy db");
     del_obj(thiz);
 }
 
@@ -1131,6 +1255,7 @@ static int _init(T *thiz)
     ADD_METHOD(get_iter);
     ADD_METHOD(recover);
     ADD_METHOD(repaire);
+    ADD_METHOD(checkpoint);
     thiz->open = db_open;
     thiz->close = db_close;
     thiz->flush = db_flush;

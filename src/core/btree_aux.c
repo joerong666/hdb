@@ -13,31 +13,75 @@
 
 size_t io_read(int fd, void *buf, size_t count)
 {
-    /* FIXME!! check errno=EINTR */
-    return read(fd, buf, count);
+    ssize_t r;
+    r = read(fd, buf, count);
+    if (r == -1) {
+        ERROR("read fd=%d, errno=%d", fd, errno);
+    }
+
+    return r;
 }
 
 ssize_t io_write(int fd, const void *buf, size_t count)
 {
-    /* FIXME!! check errno=EINTR */
-    return write(fd, buf, count);
+    ssize_t r, sum = 0;
+   
+    while(1) {
+        r = write(fd, buf, count);
+        if (r == -1 ) {
+            if (errno == EINTR) continue;
+            else {
+                ERROR("write fd=%d, errno=%d", fd, errno);
+                return -1;
+            }
+        }
+
+        sum += r;
+        if (sum == (ssize_t)count) break;
+    }
+
+    return sum;
 }
 
 size_t io_pread(int fd, void *buf, size_t count, off_t offset)
 {
-    /* FIXME!! check errno=EINTR */
-    return pread(fd, buf, count, offset);
+    ssize_t r;
+    r = pread(fd, buf, count, offset);
+    if (r == -1) {
+        ERROR("pread fd=%d, errno=%d", fd, errno);
+    }
+
+    return r;
 }
 
 ssize_t io_pwrite(int fd, const void *buf, size_t count, off_t offset)
 {
-    /* FIXME!! check errno=EINTR */
-    return pwrite(fd, buf, count, offset);
+    ssize_t r, sum = 0;
+   
+    while(1) {
+        r = pwrite(fd, buf, count, offset);
+        if (r == -1 ) {
+            if (errno == EINTR) continue;
+            else {
+                ERROR("pwrite fd=%d, errno=%d", fd, errno);
+                return -1;
+            }
+        }
+
+        sum += r;
+        if (sum == (ssize_t)count) break;
+    }
+
+    return sum;
 }
 
-static int seek_prefix(uint8_t *s1, size_t len1, uint8_t *s2, size_t len2)
+static int seek_prefix(char *s1, size_t len1, char *s2, size_t len2)
 {
     /* TODO!! */
+    UNUSED(s1);
+    UNUSED(s2);
+    UNUSED(len1);
+    UNUSED(len2);
     return 0;
 }
 
@@ -157,12 +201,12 @@ char *deseri_kmeta(fkv_t *fkv, char *src)
     return p;
 }
 
-char *deseri_kname(fkv_t *fkv, uint8_t *share, uint8_t *delt)
+char *deseri_kname(fkv_t *fkv, char *share, char *delt)
 {
     int type, rslen, rdlen, len;
-    uint8_t *tshare = share;
-    uint8_t *tdelt = delt;
-    uint8_t *k;
+    char *tshare = share;
+    char *tdelt = delt;
+    char *k;
 
     tshare = move_to_key_pos(fkv->blktype, share);
     tdelt = move_to_klen_pos(fkv->blktype, delt);
@@ -186,7 +230,7 @@ char *deseri_kname(fkv_t *fkv, uint8_t *share, uint8_t *delt)
     fkv->kshare.data = k;
     fkv->kshare.len = rslen;
 
-    memcpy((char *)(k + rslen), tdelt, rdlen); 
+    memcpy((k + rslen), tdelt, rdlen); 
     fkv->kdelt.data = k + rslen;
     fkv->kdelt.len = rdlen;
 
@@ -252,7 +296,7 @@ char *seri_kmeta(char *dst, size_t len, fkv_t *fkv)
         p = enc_varint(p, fkv->kv->v.len);
     }
 
-    ASSERT(p - dst <= len);
+    ASSERT(p - dst <= (int)len);
     return p;
 }
 
@@ -260,8 +304,6 @@ int seri_hdr(char *blkbuf, hdr_block_t *hdr)
 {
     char *hp = blkbuf;
     char *tp = blkbuf + BTR_HEADER_BLK_SIZE;
-
-    memset(hp, 0x00, BTR_HEADER_BLK_SIZE);
 
     /* crc32 calculate later */
     hp += 4;
@@ -271,7 +313,7 @@ int seri_hdr(char *blkbuf, hdr_block_t *hdr)
     memcpy(hp, hdr->magic, 8);
     hp += 8;
 
-    hp = enc_fix16(hp, hdr->version);
+    *hp++ = hdr->version & 0xFF;
     hp = enc_fix32(hp, hdr->key_cnt);
 
     *hp++ = hdr->tree_heigh & 0xFF;
@@ -298,6 +340,8 @@ int seri_hdr(char *blkbuf, hdr_block_t *hdr)
     hp++;
 #endif
     
+    memset(hp, 0x00, tp - hp);
+
     tp -= BTR_BLK_TAILER_SIZE;
     *tp++ = hdr->blktype & 0xFF;
 
@@ -322,7 +366,7 @@ int deseri_hdr(hdr_block_t *hdr, char *blkbuf)
     memcpy(hdr->magic, hp, 8);
     hp += 8;
 
-    hdr->version = dec_fix16(hp, &hp);
+    hdr->version = *hp++;
     hdr->key_cnt = dec_fix32(hp, &hp);
 
     hdr->tree_heigh = *hp++;
@@ -330,12 +374,12 @@ int deseri_hdr(hdr_block_t *hdr, char *blkbuf)
 
     hdr->beg.len = *hp++;
 
-    hdr->beg.data = (uint8_t *)hp;
+    hdr->beg.data = hp;
     hp += hdr->beg.len;
 
     hdr->end.len = *hp++;
 
-    hdr->end.data = (uint8_t *)hp;
+    hdr->end.data = hp;
     hp += hdr->end.len;
 
     hdr->fend_off = dec_varint(hp, &hp);
@@ -355,7 +399,7 @@ int deseri_hdr(hdr_block_t *hdr, char *blkbuf)
 int read_val(int fd, uint32_t blkoff, uint32_t voff, mval_t *v)
 {
     ssize_t r = 0;
-    uint8_t *dp = v->data;
+    char *dp = v->data;
     ssize_t left = v->len, sz = 0;
     uint32_t blksize = BTR_VAL_BLK_SIZE;
 
@@ -498,7 +542,6 @@ ssize_t deseri_bin_kv(char *buf, off_t xoff, size_t len, mkv_t *kv)
         return -1;
     }
 
-    kv->off = xoff;
     kv->seq = dec_fix64(p, &p);
 
     kv->type = *p++;
@@ -513,28 +556,14 @@ ssize_t deseri_bin_kv(char *buf, off_t xoff, size_t len, mkv_t *kv)
 
         kv->v.data = NULL;
         if (kv->v.len > 0) {
-            if (kv->v.len < G_BIN_VAL_SIZE) {
-                kv->v.data = MY_Malloc(kv->v.len);
-                memcpy(kv->v.data, p, kv->v.len);
-            } else {
-                kv->type |= KV_VTP_BINOFF;
-            }
+            kv->v.data = MY_Malloc(kv->v.len);
+            memcpy(kv->v.data, p, kv->v.len);
         }
 
         p += kv->v.len;
     }
     
     return (p - ps);
-}
-
-ssize_t read_bin_val(int fd, mkv_t *kv)
-{
-    ssize_t r = io_pread(fd, kv->v.data, kv->v.len, kv->off + bin_kv_size(kv) - kv->v.len);
-    if (r == -1) {
-        FATAL("read bin errno=%d, please restart for recover", errno);
-    }
-
-    return r;
 }
 
 int key_cmp(mkey_t *k1, mkey_t *k2)
@@ -544,7 +573,7 @@ int key_cmp(mkey_t *k1, mkey_t *k2)
 
     len = k1->len < k2->len ? k1->len : k2->len;
 
-    r = strncmp(k1->data, k2->data, len);
+    r = memcmp(k1->data, k2->data, len);
     if (r != 0) return r;
     if (k1->len == k2->len) return 0;
     if (k1->len < k2->len) return -1;
@@ -705,8 +734,9 @@ void backup(conf_t *cnf, char *file)
 void recycle(conf_t *cnf, char *file)
 {
 #if 1 
+    UNUSED(cnf);
     remove(file);
-#else  /* TODO!! just rename for IO performance */    
+#else  /* TODO!! just rename for IO performance. Dont use this for SSD disk */    
     char dname[G_MEM_MID], bname[G_MEM_MID], *b;
     struct stat st;
 

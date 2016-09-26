@@ -201,6 +201,8 @@ int HIDB2(db_run)(db_t *db);
 
 int HIDB2(db_flush)(db_t *db);
 
+int HIDB2(db_checkpoint)(db_t *db);
+
 void HIDB2(db_manual_purge)(db_t *db);
 
 /* begin global transaction */

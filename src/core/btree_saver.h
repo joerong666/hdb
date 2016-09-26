@@ -10,6 +10,7 @@ struct btsaver_s {
 
     int fd;
     int flag;
+    char *file;
     conf_t *conf;
     hdr_block_t *hdr;
 
@@ -17,7 +18,7 @@ struct btsaver_s {
     struct btsaver_pri *pri;
 
     /* methods */
-    int   (*init)(T *thiz);
+    int   (*init)(T *thiz, btree_t *base);
     void  (*destroy)(T *thiz);
 
     int   (*start)(T *thiz);

@@ -7,6 +7,7 @@
 #include <assert.h>
 
 #include "crc.h"
+#define  MY_Malloc malloc
 
 /* The remainder table of crc16 */
 /* The remainder table of crc16 use A001 */
@@ -137,7 +138,7 @@ uint32_t calc_crc32(const void *data, size_t len)
 
 crc16_t  *crc16_start(void)
 {
-    crc16_t *crc16 = malloc(sizeof(crc16_t));
+    crc16_t *crc16 = MY_Malloc(sizeof(crc16_t));
 
     if(!crc16) {
         return NULL;
@@ -178,7 +179,7 @@ uint16_t  crc16_finish(crc16_t *crc)
 
 crc32_t  *crc32_start(void)
 {
-    crc32_t *crc32 = malloc(sizeof(crc32_t));
+    crc32_t *crc32 = MY_Malloc(sizeof(crc32_t));
 
     if (!crc32) {
         return NULL;

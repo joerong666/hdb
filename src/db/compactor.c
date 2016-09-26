@@ -8,9 +8,11 @@
 #define T compactor_t
 
 static int cpct_major(compactor_t *thiz);
+static int cpct_ajacent(compactor_t *thiz);
 static int cpct_L0(compactor_t *thiz);
 static int cpct_remote(compactor_t *thiz);
 static int cpct_split(compactor_t *thiz);
+static int cpct_shrink(compactor_t *thiz);
 
 typedef int (*CPCT_EXECUTOR)(compactor_t *thiz);
 static CPCT_EXECUTOR g_cpct_exec[CPCT_MAX] = {
@@ -18,6 +20,8 @@ static CPCT_EXECUTOR g_cpct_exec[CPCT_MAX] = {
     [CPCT_L0]       = cpct_L0 ,
     [CPCT_REMOTE]   = cpct_remote,
     [CPCT_SPLIT]    = cpct_split,
+    [CPCT_AJACENT]  = cpct_ajacent,
+    [CPCT_SHRINK]   = cpct_shrink,
 };
 
 static void cpct_destroy(compactor_t *thiz)
@@ -108,24 +112,23 @@ static void cleanup_after_major(compactor_t *thiz, struct list_head *ovr)
 {
     ftb_t *it, *save;
 
-    /* del first entry, which is from level-0 */
+    /* del first entry, which is from src fset */
     it = list_first_entry(ovr, typeof(*it), cnode);
     list_del(&it->cnode);
     MY_LIST_DEL(&it->fnode, &thiz->src_fset->flist_len);
     it->clean(it);
     it->destroy(it);
 
-#if 1   /* drop invalid file */
+    /* drop invalid file */
     list_for_each_entry_safe(it, save, ovr, cnode) {
         if (it->model->invalid(it->model)) {
-            PROMPT("drop invalid file %s", it->file);
+            INFO("drop invalid file %s", it->file);
             list_del(&it->cnode);
             MY_LIST_DEL(&it->fnode, &thiz->dst_fset->flist_len);
             it->clean(it);
             it->destroy(it);
         }
     }
-#endif
 }
 
 static int do_major(compactor_t *thiz, ftb_t *ftb, struct list_head *ovr)
@@ -173,7 +176,9 @@ static int do_major(compactor_t *thiz, ftb_t *ftb, struct list_head *ovr)
 
 _out:
     RWLOCK_WRITE(&thiz->src_fset->lock);
-    RWLOCK_WRITE(&thiz->dst_fset->lock);
+    if (thiz->type == CPCT_MAJOR) {
+        RWLOCK_WRITE(&thiz->dst_fset->lock);
+    }
 
     trit->destroy(trit);
     list_for_each_entry(it, ovr, cnode) {
@@ -188,9 +193,28 @@ _out:
         cleanup_after_major(thiz, ovr);
     }
 
-    RWUNLOCK(&thiz->dst_fset->lock);
+    if (thiz->type == CPCT_MAJOR) {
+        RWUNLOCK(&thiz->dst_fset->lock);
+    }
     RWUNLOCK(&thiz->src_fset->lock);
 
+    return r;
+}
+
+static int cpct_ajacent(compactor_t *thiz)
+{
+    int r;
+    ftb_t *ftb, *ftb2;
+    struct list_head ovr;
+
+    INFO("do ajacent compact");
+    INIT_LIST_HEAD(&ovr);
+
+    ftb = thiz->src_ftb;
+    ftb2 = list_first_entry(&ftb->fnode, typeof(*ftb), fnode);
+    list_add_tail(&ftb2->cnode, &ovr);
+
+    r = do_major(thiz, ftb, &ovr);
     return r;
 }
 
@@ -201,6 +225,7 @@ static int cpct_major(compactor_t *thiz)
     ftbset_t *dfset = thiz->dst_fset;
     struct list_head ovr;
 
+    INFO("do major compact");
     INIT_LIST_HEAD(&ovr);
 
     ftb = thiz->src_ftb;
@@ -218,12 +243,14 @@ static int cpct_major(compactor_t *thiz)
 static int cpct_L0(compactor_t *thiz)
 {
     /* TODO!! */
+    UNUSED(thiz);
     return -1;
 }
 
 static int cpct_remote(compactor_t *thiz)
 {
     /* TODO!! */
+    UNUSED(thiz);
     return -1;
 }
 
@@ -255,7 +282,7 @@ static int cpct_split(compactor_t *thiz)
     TMP_SECOND_PARTIAL(tb2->file, thiz->conf, bname);
     tb2->init(tb2);
 
-    INFO("splitting %s into %"PRIu64", %"PRIu64, tb0->file, thiz->nfnum1, thiz->nfnum2);
+    INFO("split %s", tb0->file);
 
     m = thiz->src_ftb->model;
     r = m->split(m, tb1->model, tb2->model);
@@ -293,14 +320,14 @@ static int cpct_split(compactor_t *thiz)
 
     if (r == 0) {
         if (tb1->model->invalid(tb1->model)) {
-            PROMPT("drop invalid file %s", tb1->file);
+            INFO("drop invalid file %s", tb1->file);
             MY_LIST_DEL(&tb1->fnode, &sfset->flist_len);
             tb1->clean(tb1);
             tb1->destroy(tb1);
         }
 
         if (tb2->model->invalid(tb2->model)) {
-            PROMPT("drop invalid file %s", tb2->file);
+            INFO("drop invalid file %s", tb2->file);
             MY_LIST_DEL(&tb2->fnode, &sfset->flist_len);
             tb2->clean(tb2);
             tb2->destroy(tb2);
@@ -327,3 +354,70 @@ _out:
     return r;
 }
 
+static int cpct_shrink(compactor_t *thiz)
+{
+    int r = 0, lv;
+    uint64_t fnum;
+    char fname[G_MEM_MID], *bname;
+    ftb_t *tb0, *tb1 = NULL;
+    btree_t *m;
+    ftbset_t *sfset = thiz->src_fset;
+
+    tb0 = thiz->src_ftb;
+
+    strcpy(fname, thiz->src_ftb->file);
+    bname = basename(fname);
+    sscanf(bname, "%ju_%d", &fnum, &lv);
+
+    tb1= ftb_create(NULL);
+    tb1->conf = thiz->conf;
+    TMP_FIRST_PARTIAL(tb1->file, thiz->conf, bname);
+    tb1->init(tb1);
+
+    INFO("shrink %s", tb0->file);
+
+    m = thiz->src_ftb->model;
+    r = m->shrink(m, tb1->model);
+    if (r != 0) goto _out;
+
+    RWLOCK_WRITE(&sfset->lock);
+
+    tb1->fnode.prev = tb0->fnode.prev;
+    tb1->fnode.next = tb0->fnode.next;
+
+    tb1->fnode.prev->next = &tb1->fnode;
+    tb1->fnode.next->prev = &tb1->fnode;
+
+    /* rename file */
+    DATA_FILE(fname, thiz->conf, thiz->nfnum1, lv);
+    if (rename(tb1->file, fname) == -1) {
+        r = -1;
+        ERROR("rename %s to %s, errno=%d", tb1->file, fname, errno);
+    } else {
+        strcpy(tb1->file, fname);
+    }
+    
+    if (r == 0) {
+        if (tb1->model->invalid(tb1->model)) {
+            INFO("drop invalid file %s", tb1->file);
+            MY_LIST_DEL(&tb1->fnode, &sfset->flist_len);
+            tb1->clean(tb1);
+            tb1->destroy(tb1);
+        }
+    }
+    RWUNLOCK(&sfset->lock);
+
+ 
+_out:
+    if (r != 0) {
+        if (tb1) {
+            tb1->clean(tb1);
+            tb1->destroy(tb1);
+        }
+    } else {
+        tb0->clean(tb0);
+        tb0->destroy(tb0);
+    }
+
+    return r;
+}

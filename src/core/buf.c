@@ -7,7 +7,6 @@
 #include <string.h>
 
 #include "palloc.h"
-
 #include "buf.h"
 
 buf_t *

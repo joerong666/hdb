@@ -30,12 +30,13 @@
 #include "crc.h"
 #include "list.h"
 #include "palloc.h"
+#include "obj.h"
 #include "buf.h"
 #include "rwlock.h"
-#include "obj.h"
 #include "kv.h"
 #include "thpool.h"
 #include "conf.h"
+#include "my_malloc.h"
 
 #define gettid() syscall(__NR_gettid)
 
@@ -60,6 +61,38 @@
 #    define PROMPT log_prompt
 #endif
 
+#define MY_Malloc my_malloc
+#define MY_Calloc my_calloc
+#define MY_Realloc my_realloc
+#define MY_Free my_free
+#define MY_Memalign my_memalign
+#define MY_AlignFree my_alignfree
+
+#define POOL_CREATE     pool_create
+#define POOL_DESTROY    pool_destroy
+#define POOL_RESET      pool_reset
+#define PALLOC          palloc
+#define PCALLOC         pcalloc
+
+#if 0
+#define CONSOLE_DEBUG(...) do {             \
+    fprintf(stdout, "%zd ", time(0));        \
+    fprintf(stdout, __VA_ARGS__);           \
+    fprintf(stdout, "\r\n");                \
+} while(0)
+
+#define SAY_DEBUG(...) do {                 \
+    fprintf(stdout, "%zd ", time(0));        \
+    fprintf(stdout, "press any key to ");   \
+    fprintf(stdout, __VA_ARGS__);           \
+    fprintf(stdout, "\r\n");                \
+    getchar();                              \
+} while(0)
+#else
+#define CONSOLE_DEBUG(...)
+#define SAY_DEBUG(...) 
+#endif
+
 /* INPUT or OUTPUT arg identify */
 #define IN 
 #define OUT
@@ -70,33 +103,6 @@
 #define NOP TRACE("nothing to do!!")
 #define RDONLY
 
-#if defined(USE_ZMALLOC)
-#   include "zmalloc.h"
-#   define MY_Malloc zmalloc
-#   define MY_Calloc(_sz) zcalloc(_sz)
-#   define MY_Realloc zrealloc 
-//#   define MY_Memalign JEMALLOC_P(posix_memalign)
-#   define MY_Memalign je_posix_memalign
-#   define MY_Free(_p)   do {          \
-       if (_p) {                       \
-           zfree(_p);                   \
-       }                               \
-      /* _p = NULL;*/                      \
-    } while(0)
-
-#else
-#   define MY_Malloc malloc
-#   define MY_Calloc(_sz) calloc(1, _sz)
-#   define MY_Realloc realloc 
-#   define MY_Memalign posix_memalign
-#   define MY_Free(_p)   do {          \
-       if (_p) {                       \
-           free(_p);                   \
-       }                               \
-      /* _p = NULL;*/                      \
-    } while(0)
-#endif
-
 #define SHOULD_NOT_REACH() ASSERT(0)
 
 #ifndef UNUSED
@@ -105,11 +111,11 @@
 
 #define ARR_LEN(_a) (sizeof(_a) / sizeof(typeof((_a)[0])))
 
-#define ASSERT(expr) do {  \
-    if(!(expr)) {               \
+#define ASSERT(expr) do {                                   \
+    if(!(expr)) {                                           \
         FATAL("%s, %s, %d", #expr, __FILE__, __LINE__);     \
-        abort();                \
-    }                           \
+        abort();                                            \
+    }                                                       \
 }while(0)
 
 #define NOUSED __attribute__((__unused__))
@@ -242,7 +248,6 @@ enum g_consts_e {
     G_MEM_MID           = 1024,
     G_MEM_BIG           = 4096,
     G_REDUNDENCY_SIZE   = 64,
-    G_BIN_VAL_SIZE      = 1024,
     G_KSIZE_LIMIT       = 200,
 };
 

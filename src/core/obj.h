@@ -6,15 +6,6 @@
 #define SUPER (&thiz->super)
 #define ADD_METHOD(_m) (thiz->_m = _m)
 
-#define POOL_ALIGN pool_align
-#define POOL_CREATE pool_create 
-#define POOL_DESTROY pool_destroy
-#define POOL_RESET pool_reset
-#define PALLOC   palloc
-#define PCALLOC  pcalloc
-#define PREALLOC prealloc
-#define PFREE    pfree
-
 typedef struct obj_s {
     char new_mp_flag;   /* do not use this field anywhere anytime!! */
     pool_t *mpool;

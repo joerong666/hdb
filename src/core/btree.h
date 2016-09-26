@@ -15,6 +15,7 @@ struct btree_s {
     obj_t  super;
 
     int rfd;
+    int wfd;
     rwlock_t lock;
     char *file;
     conf_t *conf;
@@ -40,6 +41,7 @@ struct btree_s {
     int   (*krange_cmp)(T *thiz, mkey_t *k);
     int   (*pkrange_cmp)(T *thiz, mkey_t *k);
     int   (*split)(T *thiz, T *part1, T *part2);
+    int   (*shrink)(T *thiz, T *newer);
     int   (*invalid)(T *thiz);
 
     btriter_t *(*get_iter)(T *thiz, mkey_t *start, mkey_t *stop, BTITERCMP cmp);

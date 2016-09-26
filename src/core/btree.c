@@ -3,17 +3,16 @@
 #include "btree_aux.h"
 #include "conf.h"
 #include "htable.h"
-#include "btree_saver.h"
 #include "btree.h"
+#include "btree_saver.h"
 
 #define T btree_t
-#define HDRBLK_KRANGE_OFF 21
+#define HDRBLK_KRANGE_OFF 20
 #define MG_STATE_NORMAL  0
 #define MG_STATE_INVALID 1
 #define LOCK (&thiz->lock)
 
 struct btree_pri {
-    int wfd;    /* fd for write */
     int mg_state;
 
     int (*mg_filter)(fkv_t *);
@@ -31,12 +30,12 @@ static int range_cmp(T *thiz, T *other)
     h2 = other->hdr;
 
     len = h1->end.len <= h2->beg.len ? h1->end.len : h2->beg.len;
-    r = strncmp((char *)h1->end.data, (char *)h2->beg.data, len);
+    r = memcmp(h1->end.data, h2->beg.data, len);
     if (r < 0) return -1;
     if (r == 0 && h1->end.len < h2->beg.len) return -1;
 
     len = h1->beg.len <= h2->end.len ? h1->beg.len : h2->end.len;
-    r = strncmp((char *)h1->beg.data, (char *)h2->end.data, len);
+    r = memcmp(h1->beg.data, h2->end.data, len);
     if (r > 0) return +1;
     if (r == 0 && h1->beg.len > h2->end.len) return +1;
 
@@ -52,12 +51,12 @@ static int krange_cmp(T *thiz, mkey_t *k)
     h = thiz->hdr;
 
     len = h->end.len <= k->len ? h->end.len : k->len;
-    r = strncmp((char *)h->end.data, (char *)k->data, len);
+    r = memcmp(h->end.data, k->data, len);
     if (r < 0) return -1;
     if (r == 0 && h->end.len < k->len) return -1;
 
     len = h->beg.len <= k->len ? h->beg.len : k->len;
-    r = strncmp((char *)h->beg.data, (char *)k->data, len);
+    r = memcmp(h->beg.data, k->data, len);
     if (r > 0) return +1;
     if (r == 0 && h->beg.len > k->len) return +1;
 
@@ -73,12 +72,12 @@ static int pkrange_cmp(T *thiz, mkey_t *k)
     h = thiz->hdr;
 
     len = h->end.len <= k->len ? h->end.len : k->len;
-    r = strncmp((char *)h->end.data, (char *)k->data, len);
+    r = memcmp(h->end.data, k->data, len);
     if (r < 0) return -1;
     if (r == 0 && h->end.len < k->len) return -1;
 
     len = h->beg.len <= k->len ? h->beg.len : k->len;
-    r = strncmp((char *)h->beg.data, (char *)k->data, len);
+    r = memcmp(h->beg.data, k->data, len);
     if (r > 0) return +1;
 
     return 0;
@@ -99,7 +98,7 @@ static int update_hdr(T *thiz, hdr_block_t *hdr)
         goto _out;
     }
 
-    buf = thiz->hdr->start_map_buf;
+    buf = thiz->hdr->map_buf;
     if (buf != NULL) {
         r = munmap(buf, thiz->hdr->map_size);
         if (r == -1) {
@@ -107,14 +106,14 @@ static int update_hdr(T *thiz, hdr_block_t *hdr)
             goto _out;
         }
 
-        buf = thiz->hdr->start_map_buf = NULL;
+        buf = thiz->hdr->map_buf = NULL;
     }
 
     if (buf == NULL) {  /* re-mmap */
         if (hdr->leaf_off < pz) {
             hdr->map_off = 0;
         } else {
-            hdr->map_off = hdr->leaf_off - BTR_HEADER_BLK_SIZE;
+            hdr->map_off = hdr->leaf_off;
         }
 
         hdr->map_size = hdr->fend_off - hdr->map_off;
@@ -126,18 +125,17 @@ static int update_hdr(T *thiz, hdr_block_t *hdr)
             goto _out;
         }
 
-//        madvise(buf, hdr->map_size, MADV_SEQUENTIAL);
+        madvise(buf, hdr->map_size, MADV_WILLNEED);
     }
 
     memcpy(thiz->hdr, hdr, sizeof(*hdr));
-    thiz->hdr->start_map_buf = buf;
-    thiz->hdr->map_buf = buf + hdr->leaf_off - hdr->map_off;
+    thiz->hdr->map_buf = buf;
 
     h = thiz->hdr;
 
     hdr_off = h->fend_off - h->map_off - BTR_HEADER_BLK_SIZE;
-    h->beg.data = (uint8_t *)(buf + hdr_off + HDRBLK_KRANGE_OFF + 1);
-    h->end.data = (uint8_t *)(h->beg.data + h->beg.len + 1);
+    h->beg.data = (buf + hdr_off + HDRBLK_KRANGE_OFF + 1);
+    h->end.data = (h->beg.data + h->beg.len + 1);
 
     INFO("update %s\n"
         "krange: %.*s~%.*s\n" 
@@ -155,9 +153,14 @@ _out:
 
 static int prepare_file(T *thiz)
 {
-    if (SELF->wfd == -1) {
-        SELF->wfd = open(thiz->file, O_CREAT | O_RDWR | O_DIRECT, 0644);
-        if (SELF->wfd == -1) {
+    if (thiz->wfd == -1) {
+        if (thiz->conf->flag & DBCNF_IO_DIRECT) {
+            thiz->wfd = open(thiz->file, O_CREAT | O_RDWR | O_DIRECT, 0644);
+        } else {
+            thiz->wfd = open(thiz->file, O_CREAT | O_RDWR, 0644);
+        }
+
+        if (thiz->wfd == -1) {
             ERROR("open %s, errno=%d", thiz->file, errno);
             return -1;
         }
@@ -186,9 +189,7 @@ static int store(T *thiz, htable_t *htb)
     iter = htb->get_iter(htb, NULL, NULL, NULL);
 
     sv = btsaver_create(NULL);
-    sv->fd = SELF->wfd;
-    sv->conf = thiz->conf;
-    sv->init(sv);
+    sv->init(sv, thiz);
     sv->start(sv);
 
     while (iter->has_next(iter)) {
@@ -198,18 +199,6 @@ static int store(T *thiz, htable_t *htb)
         iter->get(iter, (void **)&kv);
 
         DEBUG("iter key %.*s", (int)kv->k.len, kv->k.data);
-
-        if (kv->type & KV_VTP_BINOFF) {
-            kv->v.data = MY_Malloc(kv->v.len);
-
-            r = read_bin_val(htb->fd, kv);
-            if (r == -1) {
-                MY_Free(kv->v.data);
-                goto _out;
-            }
-
-            kv->type |= KV_VTP_FROM_FILE;
-        }
 
         r = sv->save_kv(sv, kv);
         if (r != 0) goto _out;
@@ -235,16 +224,15 @@ static int diagnosis(T *thiz)
     struct stat st;
     char *hdr_buf = NULL, *tail_buf = NULL;
 
-    r1 = MY_Memalign((void *)&hdr_buf, getpagesize(), BTR_HEADER_BLK_SIZE);
-    r2 = MY_Memalign((void *)&tail_buf, getpagesize(), BTR_HEADER_BLK_SIZE);
+    hdr_buf = MY_Memalign(BTR_HEADER_BLK_SIZE);
+    tail_buf = MY_Memalign(BTR_HEADER_BLK_SIZE);
 
-    if (r1 != 0 || r2 != 0) {
-        ERROR("alloc block, r1=%d, r2=%d", r1, r2);
+    if (hdr_buf == NULL || tail_buf == NULL) {
         r = -1;
         goto _out;
     }
 
-    r1 = io_pread(SELF->wfd, hdr_buf, BTR_HEADER_BLK_SIZE, 0);
+    r1 = io_pread(thiz->wfd, hdr_buf, BTR_HEADER_BLK_SIZE, 0);
     if (r1 == -1 || r1 != BTR_HEADER_BLK_SIZE) {
         ERROR("pread errno=%d, r=%d", errno, BTR_HEADER_BLK_SIZE);
         r = -1;
@@ -252,8 +240,8 @@ static int diagnosis(T *thiz)
     }
 
     /* read tailer block */
-    fstat(SELF->wfd, &st);
-    r2 = io_pread(SELF->wfd, tail_buf, BTR_HEADER_BLK_SIZE, st.st_size - BTR_HEADER_BLK_SIZE);
+    fstat(thiz->wfd, &st);
+    r2 = io_pread(thiz->wfd, tail_buf, BTR_HEADER_BLK_SIZE, st.st_size - BTR_HEADER_BLK_SIZE);
     if (r2 == -1 || r2 != BTR_HEADER_BLK_SIZE) {
         ERROR("pread errno=%d, r=%d", errno, r2);
         r = -1;
@@ -296,7 +284,7 @@ static int diagnosis(T *thiz)
     }
 
     PROMPT("repair header block");
-    r2 = io_pwrite(SELF->wfd, tail_buf, BTR_HEADER_BLK_SIZE, 0);
+    r2 = io_pwrite(thiz->wfd, tail_buf, BTR_HEADER_BLK_SIZE, 0);
     if (r2 == -1 || r2 != BTR_HEADER_BLK_SIZE) {
         ERROR("repair header block error");
         r = -1;
@@ -304,8 +292,8 @@ static int diagnosis(T *thiz)
     }
 
 _out:
-    if (hdr_buf) MY_Free(hdr_buf);
-    if (tail_buf) MY_Free(tail_buf);
+    if (hdr_buf) MY_AlignFree(hdr_buf);
+    if (tail_buf) MY_AlignFree(tail_buf);
 
     return r;
 }
@@ -333,7 +321,7 @@ static int fit_file(T *thiz, hdr_block_t *hdr)
     struct stat st;
     char *hdr_buf = NULL, *tail_buf = NULL;
 
-    fstat(SELF->wfd, &st);
+    fstat(thiz->wfd, &st);
     if (hdr->fend_off == st.st_size) goto _out;
     if (hdr->fend_off > st.st_size) {
         ERROR("offset=%"PRIu32" bigger than fsize=%zu", hdr->fend_off, st.st_size);
@@ -342,18 +330,18 @@ static int fit_file(T *thiz, hdr_block_t *hdr)
     }
 
     PROMPT("repair tailer block");
-    r = ftruncate(SELF->wfd, hdr->fend_off);
+    r = ftruncate(thiz->wfd, hdr->fend_off);
     if (r != 0) {
         ERROR("ftruncate errno=%d", errno);
         r = -1;
         goto _out;
     }
 
-    MY_Memalign((void *)&hdr_buf, getpagesize(), BTR_HEADER_BLK_SIZE);
-    MY_Memalign((void *)&tail_buf, getpagesize(), BTR_HEADER_BLK_SIZE);
+    hdr_buf = MY_Memalign(BTR_HEADER_BLK_SIZE);
+    tail_buf = MY_Memalign(BTR_HEADER_BLK_SIZE);
 
-    io_pread(SELF->wfd, hdr_buf, BTR_HEADER_BLK_SIZE, 0);
-    io_pread(SELF->wfd, tail_buf, BTR_HEADER_BLK_SIZE, hdr->fend_off - BTR_HEADER_BLK_SIZE);
+    io_pread(thiz->wfd, hdr_buf, BTR_HEADER_BLK_SIZE, 0);
+    io_pread(thiz->wfd, tail_buf, BTR_HEADER_BLK_SIZE, hdr->fend_off - BTR_HEADER_BLK_SIZE);
 
     r = memcmp(hdr_buf, tail_buf, BTR_HEADER_BLK_SIZE);
     if (r != 0) {
@@ -361,11 +349,11 @@ static int fit_file(T *thiz, hdr_block_t *hdr)
         r = -1;
     }
 
-    MY_Free(hdr_buf);
-    MY_Free(tail_buf);
+    MY_AlignFree(hdr_buf);
+    MY_AlignFree(tail_buf);
 
 _out:
-    fsync(SELF->wfd);
+    fsync(thiz->wfd);
     return r;
 
 }
@@ -375,7 +363,7 @@ static int restore(T *thiz)
     int r;
     hdr_block_t hdr;
 
-    PROMPT("restoring %s", thiz->file);
+    INFO("restoring %s", thiz->file);
 
     r = prepare_file(thiz);
     if (r != 0) return -1;
@@ -414,13 +402,7 @@ static int merge_start(T *thiz, int (*filter)(fkv_t *))
     btriter_t *iter;
 
     sv = btsaver_create(NULL);
-    sv->fd = SELF->wfd;
-    sv->conf = thiz->conf;
-
-    if (thiz->hdr->cpct_cnt < 250) sv->hdr->cpct_cnt = thiz->hdr->cpct_cnt + 1;
-    else sv->hdr->cpct_cnt = thiz->hdr->cpct_cnt;
-
-    sv->init(sv);
+    sv->init(sv, thiz);
     sv->start(sv);
 
     iter = thiz->get_iter(thiz, NULL, NULL, NULL);
@@ -585,7 +567,7 @@ off_t find_in_index(T *thiz, off_t ioff, mkey_t *target, KCMP cmp)
     int r, type, key_cnt, i;
     off_t toff, child_off = 0;
     uint16_t share_ks, delt_ks;
-    uint8_t *blkbuf, *pb, *p, kdata[G_KSIZE_LIMIT];
+    char *blkbuf, *pb, *p, kdata[G_KSIZE_LIMIT];
     mkey_t k;
     KCMP kcmp = cmp ? cmp : key_cmp;
 
@@ -731,7 +713,7 @@ static int exist(T *thiz, mkey_t *key)
 static int split(T *thiz, T *part1, T *part2)
 {
     ssize_t r = 0;
-    size_t bytes = 0;
+    size_t bytes = 0, i = 0, kleft = 0;
     fkv_t *fkv;
     btriter_t *trit;
     btsaver_t *sv1, *sv2;
@@ -743,15 +725,11 @@ static int split(T *thiz, T *part1, T *part2)
     if (r != 0) return -1;
 
     sv1 = btsaver_create(NULL);
-    sv1->fd = part1->pri->wfd;
-    sv1->conf = part1->conf;
-    sv1->init(sv1);
+    sv1->init(sv1, part1);
     sv1->start(sv1);
 
     sv2 = btsaver_create(NULL);
-    sv2->fd = part2->pri->wfd;
-    sv2->conf = part2->conf;
-    sv2->init(sv2);
+    sv2->init(sv2, part2);
     sv2->start(sv2);
 
     trit = btriter_create(NULL);
@@ -759,6 +737,8 @@ static int split(T *thiz, T *part1, T *part2)
     trit->init(trit);
    
     while (trit->has_next(trit)) {
+        i++;
+
         r = trit->get_next(trit, &fkv);
         if (r != 0) break;
 
@@ -771,7 +751,11 @@ static int split(T *thiz, T *part1, T *part2)
 
         bytes += fkv->kv->k.len + fkv->kv->v.len;
 
-        if (bytes > thiz->conf->ftb_size) {
+        if (bytes > thiz->conf->ftb_size && kleft == 0) {
+            kleft = thiz->hdr->key_cnt - i;
+        }
+
+        if (kleft > thiz->conf->ftb_min_kcnt) {
             r = sv2->save_fkv(sv2, fkv);
         } else {
             r = sv1->save_fkv(sv1, fkv);
@@ -808,12 +792,68 @@ _out:
     return r;
 }
 
+static int shrink(T *thiz, T *newer)
+{
+    ssize_t r = 0;
+    fkv_t *fkv;
+    btriter_t *trit;
+    btsaver_t *sv1;
+
+    r = prepare_file(newer);
+    if (r != 0) return -1;
+
+    sv1 = btsaver_create(NULL);
+    sv1->init(sv1, newer);
+    sv1->start(sv1);
+
+    trit = btriter_create(NULL);
+    trit->container = thiz;
+    trit->init(trit);
+   
+    while (trit->has_next(trit)) {
+        r = trit->get_next(trit, &fkv);
+        if (r != 0) break;
+
+        if (merge_filter(fkv)) {
+            continue;
+        }
+
+        extract_fkey(fkv);
+        extract_fval(thiz->rfd, fkv);
+
+        r = sv1->save_fkv(sv1, fkv);
+        if (r != 0) break;
+
+        trit->next(trit);
+    }
+
+    trit->destroy(trit);
+    if (r != 0) goto _out;
+
+    r = sv1->flush(sv1);
+    if (r != 0) goto _out;
+
+    r = update_hdr(newer, sv1->hdr);
+    if (r != 0) goto _out;
+
+_out:
+    if (r != 0) r = -1;
+
+    sv1->finish(sv1);
+    sv1->destroy(sv1);
+
+    return r;
+}
 /****************************************
 ** basic function 
 *****************************************/
 static void destroy(btree_t *thiz)
 {
-    close(SELF->wfd);
+    if (thiz->hdr != NULL && thiz->hdr->map_buf != NULL) {
+        munmap(thiz->hdr->map_buf, thiz->hdr->map_size);
+    }
+
+    close(thiz->wfd);
     close(thiz->rfd);
 
     del_obj(thiz);
@@ -824,9 +864,17 @@ static int _init(T *thiz)
     RWLOCK_INIT(LOCK);
 
     thiz->hdr = PCALLOC(SUPER->mpool, sizeof(hdr_block_t));
+#if 1
+    thiz->hdr->fend_off = BTR_HEADER_BLK_SIZE;
+#else
+    thiz->hdr->fend_off = BTR_HEADER_BLK_SIZE;
+    thiz->hdr->version = DB_FILE_VERSION;
+    thiz->hdr->blktype = BTR_HEADER_BLK;
+    strncpy(thiz->hdr->magic, DB_MAGIC_NUM, sizeof(thiz->hdr->magic));
+#endif
 
     thiz->rfd = -1;
-    SELF->wfd = -1;
+    thiz->wfd = -1;
 
     ADD_METHOD(destroy);
     ADD_METHOD(store);
@@ -843,6 +891,7 @@ static int _init(T *thiz)
     ADD_METHOD(krange_cmp);
     ADD_METHOD(pkrange_cmp);
     ADD_METHOD(split);
+    ADD_METHOD(shrink);
     ADD_METHOD(invalid);
     ADD_METHOD(get_iter);
 
@@ -856,10 +905,7 @@ T *btree_create(pool_t *mpool)
 
     SELF = (typeof(SELF))((char *)thiz + sizeof(*thiz));
 
-    if (_init(thiz) != 0) {
-        del_obj(thiz);     
-        return NULL;       
-    }                      
+    _init(thiz);
 
     return thiz;           
 }

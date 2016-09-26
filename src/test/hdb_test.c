@@ -15,6 +15,8 @@
 
 #define PRINT(_f, ...)  fprintf(_f, "%zu tid-%zd %s:%d, ", time(NULL), gettid(), __FILE__, __LINE__); \
                         fprintf(_f, __VA_ARGS__); fprintf(_f, "\r\n")
+
+#ifdef FOR_UNIT_TEST
 #define TRACE(...)  PRINT(stderr, __VA_ARGS__) 
 #define DEBUG(...)  
 #define INFO(...)   PRINT(stderr, __VA_ARGS__)
@@ -22,25 +24,47 @@
 #define ERROR(...)  PRINT(stderr, __VA_ARGS__)
 #define FATAL(...)  PRINT(stderr, __VA_ARGS__)
 #define PROMPT(...) PRINT(stdout, __VA_ARGS__)
+#else
+#    include "log.h"
+#    define TRACE  log_debug
+#    define DEBUG  log_debug
+#    define INFO   log_info
+#    define WARN   log_warn
+#    define ERROR  log_error
+#    define FATAL  log_fatal
+#    define PROMPT log_prompt
+#endif
 
-#define MY_Malloc malloc
-#define MY_Free(_p)   do {          \
-        if (_p) {                       \
-                    free(_p);                   \
-                }                               \
-       /* _p = NULL;*/                      \
-} while(0)
+#if defined(USE_ZMALLOC)
+#   include "zmalloc.h"
+#   define MY_Malloc zmalloc
+#   define MY_Free(_p)   do {           \
+       if (_p) {                        \
+           zfree(_p);                   \
+       }                                \
+      /* _p = NULL;*/                   \
+    } while(0)
+#else
+#   define MY_Malloc malloc             
+#   define MY_Free(_p)   do {           \
+           if (_p) {                    \
+                free(_p);               \
+           }                            \
+          /* _p = NULL;*/               \
+    } while(0)
+#endif
 
 #define T db_t
 
 #define TEST_START() \
-    int l;                              \
-    PROMPT("%s start", __func__);        \
-    for (l = 0; l < loop; l++) {    
+    int _l;                              \
+    PRINT(stdout, "%s start", __func__); \
+    for (_l = 0; _l < loop; _l++) {    
 
 #define TEST_FIN() \
     }               \
-    PROMPT("%s finish, press any key to continue", __func__);
+    HIDB2(db_checkpoint)(db);   \
+    PRINT(stdout, "%s finish, press any key to continue", __func__);
 
 enum l_case_e {
     CASE_PUT  = 1,
@@ -54,6 +78,7 @@ enum l_case_e {
     CASE_PUT_GET = 1 << 8,
     CASE_PUT_PGET = 1 << 9,
     CASE_MPUT_PGET = 1 << 10,
+    CASE_SINGLE_PGET = 1 << 11,
 };
 
 static int l_tcase = 0, loop = 1, dbver = 1;
@@ -99,9 +124,7 @@ static int test_db_put(T *db)
 
         if (r != 0) return r;
     }
-#if 0
-    db_flush(db);
-#endif
+
     TEST_FIN()
 
     return 0;
@@ -147,9 +170,7 @@ static int test_db_mput(T *db)
         r = HIDB2(db_mput)(db, kvs, 2);
         if (r != 0) return r;
     }
-#if 0
-    HIDB2(db_flush)(db);
-#endif
+
     TEST_FIN()
 
     return 0;
@@ -174,9 +195,7 @@ static int test_db_del(T *db)
 
         if (r != 0) return r;
     }
-#if 0
-    HIDB2(db_flush)(db);
-#endif
+
     TEST_FIN()
 
     return 0;
@@ -189,9 +208,7 @@ static int test_db_pdel(T *db)
     TEST_START()
     r = HIDB2(db_pdel)(db, l_prefix, strlen(l_prefix));
     if (r != 0) return r;
-#if 0
-    HIDB2(db_flush)(db);
-#endif
+
     TEST_FIN()
 
     return 0;
@@ -227,9 +244,7 @@ static int test_db_mdel(T *db)
         r = HIDB2(db_mdel)(db, kvs, 2);
         if (r != 0) return r;
     }
-#if 0
-    HIDB2(db_flush)(db);
-#endif
+
     TEST_FIN()
 
     return 0;
@@ -263,7 +278,7 @@ static int test_db_get(T *db)
 
             MY_Free(vdp);
         } else {
-            WARN("%s not found or error, r=%d", kdata, r);
+            ERROR("%s not found or error, r=%d", kdata, r);
         }
     }
 
@@ -276,7 +291,7 @@ static int test_db_get(T *db)
 
 static int test_db_iter(T *db)
 {
-    int r, ks, vs;
+    int r, ks, vs, cnt = 0;
     char *k, *v, *kt, *vt;
     iter_t *it;
 
@@ -299,23 +314,19 @@ static int test_db_iter(T *db)
 
         kt = strchr(k, '-');
         vt = strchr(v, '-');
-#if 0
         if ((ks - (kt - k) != vs - (vt - v))) {
             ERROR("ks=%d  vs=%d  %.*s  %.*s", ks, vs, ks, k, vs, v);
             goto _next;
         }
 
         if (memcmp(kt, vt, ks - (kt - k)) != 0) {
-#endif
-#if 1
             ERROR("ks=%d  vs=%d  %.*s  %.*s", ks, vs, ks, k, vs, v);
-#endif
-#if 0
             goto _next;
         }
-#endif
 
+        WARN("ks=%d  vs=%d  %.*s  %.*s", ks, vs, ks, k, vs, v);
 _next:
+        cnt++;
         MY_Free(k);
         MY_Free(v);
     }
@@ -326,6 +337,7 @@ _next:
         HIDB2(db_destroy_it)(it);
     }
 
+    PRINT(stdout, "iterate cnt=%d", cnt);
     TEST_FIN()
 
     return 0;
@@ -346,17 +358,17 @@ static int test_db_pget(T *db)
         vt = strchr(v, '-');
 
         if ((ks - (kt - k) != vs - (vt - v))) {
-            ERROR("err: ks=%d  vs=%d  %.*s  %.*s", ks, vs, ks, k, vs, v);
+            INFO("err: ks=%d  vs=%d  %.*s  %.*s", ks, vs, ks, k, vs, v);
             goto _next;
         }
 
         if (memcmp(kt, vt, ks - (kt - k)) != 0) {
-            ERROR("err: ks=%d  vs=%d  %.*s  %.*s", ks, vs, ks, k, vs, v);
+            INFO("err: ks=%d  vs=%d  %.*s  %.*s", ks, vs, ks, k, vs, v);
             goto _next;
         }
-#if 1
-        ERROR("ks=%d  vs=%d  %.*s %.*s", ks, vs, ks, k, vs, v);
-#endif
+
+        WARN("ks=%d  vs=%d  %.*s %.*s", ks, vs, ks, k, vs, v);
+
 _next:
         MY_Free(k);
         MY_Free(v);
@@ -368,15 +380,92 @@ _next:
     return 0;
 }
 
+static int test_db_single_pget(T *db)
+{
+    int i, r, ks, vs;
+    char *kdata, *vdata, *vdp, *kdp;
+    iter_t *it;
+    
+    kdata = MY_Malloc(l_ksize + 32);
+    vdata = MY_Malloc(l_vsize + 32);
+
+    TEST_START();
+    for (i = 0; i < l_kvcnt; i++) {
+        sprintf(kdata, "%s-%d", kpattern, i);
+        ks = strlen(kdata);
+
+        if (dbver == 1) {
+            r = db_get(db, kdata, ks, &vdp, &vs, NULL);
+        } else {
+            it = HIDB2(db_pget)(db, kdata, ks);
+            r = HIDB2(db_iter)(it, &kdp, &ks, &vdp, &vs, NULL);
+        }
+
+        if (r == 0) {
+            sprintf(vdata, "%s-%d", vpattern, i);
+            r = memcmp(vdata, vdp, vs);
+            if (r != 0) {
+                ERROR("i=%d, vlen=%d, vdata=%.*s", i, vs, vs, vdp);
+            }
+
+            MY_Free(kdp);
+            MY_Free(vdp);
+        } else {
+            WARN("%s not found or error, r=%d", kdata, r);
+        }
+
+        if (dbver != 1) {
+            HIDB2(db_destroy_it)(it);
+        }
+    }
+
+    TEST_FIN()
+
+    MY_Free(kdata);
+    MY_Free(vdata);
+    return 0;
+}
+
+#ifndef FOR_UNIT_TEST
+static void init_log()
+{
+    static int g_log_level = PF_LOG_WARN;
+    static pf_log_config_t g_log_cnf;
+
+    pf_log_init_config(&g_log_cnf);
+    strcpy(g_log_cnf.log_file, "log");
+    g_log_cnf.log_level = g_log_level;
+    pf_log_init(&g_log_cnf);
+}
+#endif
+
 int main(int argc, char *argv[])
 {
     T *db;
     char buf[32];
-    char *dbpath = "test_db";
+    char dbpath[256];
 
     UNUSED(argc);
     UNUSED(argv);
 
+#ifndef FOR_UNIT_TEST
+    init_log();
+#endif 
+
+    strcpy(dbpath, argv[1]);
+    l_tcase = atoi(argv[2]);
+
+    if (argc >= 4) {
+        l_kvcnt = atoi(argv[3]);
+    }
+
+    if (argc >= 5) {
+        strcpy(l_prefix, argv[4]);
+    }
+
+    if (argc >= 6) {
+        loop = atoi(argv[5]);
+    }
 
     dbver = dbe_version(dbpath);
 
@@ -387,19 +476,6 @@ int main(int argc, char *argv[])
     }
 
     test_init(db);
-    l_tcase = atoi(argv[1]);
-
-    if (argc >= 3) {
-        l_kvcnt = atoi(argv[2]);
-    }
-
-    if (argc >= 4) {
-        strcpy(l_prefix, argv[3]);
-    }
-
-    if (argc >= 5) {
-        loop = atoi(argv[4]);
-    }
 
     if (dbver == 1) {
         db_run(db);
@@ -409,41 +485,55 @@ int main(int argc, char *argv[])
 
     if (l_tcase & CASE_PUT) {
         test_db_put(db);
+
         read(1, buf, 1);
     }
 
     if (l_tcase & CASE_MPUT) {
         test_db_mput(db);
+
         read(1, buf, 1);
     }
 
     if (l_tcase & CASE_DEL) {
         test_db_del(db);
+
         read(1, buf, 1);
     }
 
     if (l_tcase & CASE_PDEL) {
         test_db_pdel(db);
+
         read(1, buf, 1);
     }
 
     if (l_tcase & CASE_MDEL) {
         test_db_mdel(db);
+
         read(1, buf, 1);
     }
 
     if (l_tcase & CASE_ITER) {
         test_db_iter(db);
+
         read(1, buf, 1);
     }
 
     if (l_tcase & CASE_GET) {
         test_db_get(db);
+
         read(1, buf, 1);
     }
 
     if (l_tcase & CASE_PGET) {
         test_db_pget(db);
+
+        read(1, buf, 1);
+    }
+
+    if (l_tcase & CASE_SINGLE_PGET) {
+        test_db_single_pget(db);
+
         read(1, buf, 1);
     }
 
@@ -483,7 +573,7 @@ int main(int argc, char *argv[])
         read(1, buf, 1);
     }
 
-    PROMPT("press any key to close db");
+    PRINT(stdout, "press any key to close db\n");
     read(1, buf, 1);
 
     if (dbver == 1) {
@@ -492,7 +582,7 @@ int main(int argc, char *argv[])
         HIDB2(db_close)(db);
     }
 
-    PROMPT("press any key to exit");
+    PRINT(stdout, "press any key to exit\n");
     read(1, buf, 1);
 
     return 0;

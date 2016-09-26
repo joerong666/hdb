@@ -4,6 +4,7 @@
 #define T   skiter_t
 
 struct skiter_pri {
+    int next_flag;
     skl_node *cur_pos;    
 };
 
@@ -18,18 +19,12 @@ static skl_node *search_first(T *thiz)
 
 	x = skl->head;
 	for (i = skl->lv - 1; i >= 0; i--) {
-#if 0
-		while (x->lvs[i].fw && (c = thiz->cmp(x->lvs[i].fw->data, thiz->start, thiz->stop)) < 0) {
-			x = x->lvs[i].fw;
-		}
-#else
         fw = x->lvs[i].fw;
 
 		while (fw && (c = thiz->cmp(fw->data, thiz->start, thiz->stop)) < 0) {
 			x = fw;
             fw = fw->lvs[i].fw;
 		}
-#endif
     }
 
     return x;
@@ -40,7 +35,7 @@ static int has_next(skiter_t *thiz)
     int r;
     skl_node *x, *fw;
 
-
+    if (SELF->next_flag) return 1;
     if (SELF->cur_pos == NULL || SELF->cur_pos->lvs[0].fw == NULL) return 0;
     if (thiz->start == NULL && thiz->stop == NULL) return 1;
     if (thiz->cmp == NULL) return 1;
@@ -55,11 +50,14 @@ static int has_next(skiter_t *thiz)
     if (fw == NULL) return 0;
 
     r = thiz->cmp(fw->data, thiz->start, thiz->stop);
-    return (r == 0);
+    if (r == 0) SELF->next_flag = 1;
+
+    return SELF->next_flag;
 }
 
 static int next(skiter_t *thiz)
 {
+    SELF->next_flag = 0;
     SELF->cur_pos = SELF->cur_pos->lvs[0].fw;
 
     return 0;

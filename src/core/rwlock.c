@@ -57,21 +57,12 @@ int rwlock_mutex_tryrdlock(rwlock_t *rw)
 
     pthread_mutex_lock(&rw->mtx);
 
-#if 0   /* write lock first */
-    if (rw->refs < 0 || rw->w_waits > 0) {
+    if (rw->refs < 0) {
         r = -1;
         goto _out;
     }
-#else   /* read lock first */
-    if (rw->refs < 0 || rw->w_waits > 0) {
-        r = -1;
-        goto _out;
-    }
-#endif
 
-    rw->r_waits++;
     rw->refs++; /* got read lock */
-    rw->r_waits--;
 
 _out:
     pthread_mutex_unlock(&rw->mtx);
@@ -90,9 +81,7 @@ int rwlock_mutex_trywrlock(rwlock_t *rw)
         goto _out;
     }
 
-    rw->w_waits++;
     rw->refs--; /* got write lock */
-    rw->w_waits--;
 
 _out:
     pthread_mutex_unlock(&rw->mtx);
@@ -112,6 +101,7 @@ int rwlock_mutex_unlock(rwlock_t *rw)
 
     assert(rw->refs >= 0);
 
+#if 0 /* write lock first */
     if (rw->w_waits > 0) {
         if (rw->refs == 0) {
             pthread_cond_signal(&rw->w_cond);
@@ -119,6 +109,15 @@ int rwlock_mutex_unlock(rwlock_t *rw)
     } else if (rw->r_waits > 0) {
         pthread_cond_signal(&rw->r_cond);
     }
+#else /* read lock first */
+    if (rw->r_waits > 0) {
+        pthread_cond_signal(&rw->r_cond);
+    } else if (rw->w_waits > 0) {
+        if (rw->refs == 0) {
+            pthread_cond_signal(&rw->w_cond);
+        }
+    }
+#endif
 
     pthread_mutex_unlock(&rw->mtx);
 
