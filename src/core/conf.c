@@ -27,7 +27,7 @@ static int mvalflt(T *thiz, mkv_t *kv)
 static int fkeyflt(T *thiz, fkv_t *fkv)
 {
     mkv_t *kv = fkv->kv;
-    size_t ks;
+    int ks;
 
     if (kv->type & KV_OP_DEL) return 1;
 
@@ -53,7 +53,7 @@ static int fvalflt(T *thiz, fkv_t *fkv)
     mkv_t *kv = fkv->kv;
 
     if (thiz->vflt && thiz->vflt(kv->v.data, kv->v.len, NULL)) {
-        INFO("vflitered kshare=%.*s, kdelt=%.*", 
+        INFO("vflitered kshare=%.*s, kdelt=%.*s", 
                 fkv->kshare.len, fkv->kshare.data,
                 fkv->kdelt.len, fkv->kdelt.data);
         return 1;
