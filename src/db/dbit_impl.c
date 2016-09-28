@@ -137,11 +137,11 @@ static int check_mkexist(T *thiz, mkv_t *kv, mtb_t *tb)
     mtbset_t *mq;
 
     mtb = thiz->mmtb;
-    r = mtb->exist(mtb, &kv->k);
+    r = mtb->exist(mtb, &kv->k, thiz->version);
     if (r) return r;
 
     mq = thiz->imq;
-    r = mq->exist(mq, &kv->k, tb);
+    r = mq->exist(mq, &kv->k, tb, thiz->version);
     if (r) return r;
 
     return 0;
@@ -169,15 +169,15 @@ static int check_fkexist(T *thiz, fkv_t *fkv, ftb_t *tb)
     }
 
     mtb = thiz->mmtb;
-    r = mtb->exist(mtb, &k);
+    r = mtb->exist(mtb, &k, thiz->version);
     if (r) return r;
 
     mq = thiz->imq;
-    r = mq->exist(mq, &k, NULL);
+    r = mq->exist(mq, &k, NULL, thiz->version);
     if (r) return r;
 
     fq = SELF->fq_L0;
-    r = fq->exist(fq, &k, tb);
+    r = fq->exist(fq, &k, tb, thiz->version);
     if (r) return r;
 
     return 0;
@@ -215,7 +215,7 @@ static int it_mmt(T *thiz, mkv_t *kv)
     htiter_t *iter = SELF->miter;
 
     if (!(thiz->flag & IT_BEG)) {
-        RWLOCK_WRITE(&tb->lock);
+        RWLOCK_READ(&tb->lock);
         SELF->lock_flag |= LOCK_MMT;
 
         thiz->flag |= IT_BEG;

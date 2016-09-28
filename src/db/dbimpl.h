@@ -50,6 +50,7 @@ struct dbit_impl_s {
     obj_t  super;
 
     uint32_t flag;
+    uint64_t version;
     T *container;
     mtb_t *mmtb;
     mtbset_t *imq;

@@ -31,7 +31,7 @@ struct ftb_s {
     void  (*backup)(T *thiz);
 
     int   (*find)(T *thiz, mkey_t *k, mval_t *v);
-    int   (*exist)(T *thiz, mkey_t *k);
+    int   (*exist)(T *thiz, mkey_t *k, uint64_t ver);
     int   (*store)(T *thiz, mtb_t *mtb);
     int   (*restore)(T *thiz);
     void  (*search_overlap)(T *thiz, ftbset_t *fset, struct list_head *ovr);
@@ -56,7 +56,7 @@ struct ftbset_s {
     int   (*len)(ftbset_t *thiz);
     int   (*push)(ftbset_t *thiz, T *item);
     int   (*find)(ftbset_t *thiz, mkey_t *k, mval_t *v);
-    int   (*exist)(ftbset_t *thiz, mkey_t *k, ftb_t *until_pos);
+    int   (*exist)(ftbset_t *thiz, mkey_t *k, ftb_t *until_pos, uint64_t ver);
     int   (*find_ins_pos)(ftbset_t *thiz, ftb_t *ftb, ftb_t **pos);
     ftb_t *(*top)(ftbset_t *thiz);
     ftb_t *(*tail)(ftbset_t *thiz);

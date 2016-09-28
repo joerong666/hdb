@@ -510,7 +510,7 @@ static int   pdel(T *thiz, mkey_t *prefix)
     RWLOCK_WRITE(&SELF->mmtb->model->lock);
 
     it = thiz->get_iter(thiz, prefix, NULL);
-    it->flag |= IT_UNSAFE | IT_ONLY_KEY;
+    it->flag |= (IT_UNSAFE | IT_ONLY_KEY);
 
     while(it->next(it, &kv)) {
         kv.type = KV_OP_DEL;
@@ -1115,6 +1115,7 @@ static dbit_impl_t *get_iter(T *thiz, mkey_t *start, mkey_t *stop)
     it->mmtb = SELF->mmtb;
     pthread_mutex_unlock(&SELF->rw_lock);
 
+    it->version = get_seq(thiz);
     it->imq = SELF->imq;
     it->init(it);
 

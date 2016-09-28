@@ -117,7 +117,10 @@ static int push_i(T *thiz, mkv_t *nkv, int safe)
     memcpy(kv, nkv, sizeof(*kv));
 
     r = thiz->model->push(thiz->model, kv, (void **)&okv);
-    if (r == -1) return r;
+    if (r == -1) {
+        MY_Free(kv);
+        return r;
+    }
 
     ASSERT( r == 0 || r == 1);
 
@@ -223,10 +226,12 @@ static void after_write(T *thiz)
 static int switch_kvlist(T *thiz)
 {
     if (SELF->im_kvlist == NULL) {
+        RWLOCK_WRITE(&thiz->lock);
         change_mmkv_status(thiz);
 
         SELF->im_kvlist = SELF->mm_kvlist;
         SELF->mm_kvlist = kvlist_create(NULL);
+        RWUNLOCK(&thiz->lock);
     }
 
     return 0;
@@ -486,16 +491,17 @@ _out:
     return RC_FOUND;
 }
 
-static int   exist(T *thiz, const mkey_t *k)
+static int   exist(T *thiz, const mkey_t *k, uint64_t ver)
 {
-    int r = 0;
-    mkv_t kv;
+    mkv_t kv, *tkv;
 
     memcpy(&kv.k, k, sizeof(*k));
 
-    r = thiz->model->exist(thiz->model, &kv);
+    tkv = thiz->model->find(thiz->model, &kv);
+    if (tkv == NULL) return 0;
+    if (ver == 0 || tkv->seq <= ver) return 1;
    
-    return r;
+    return 0;
 }
 
 static int empty(T *thiz)

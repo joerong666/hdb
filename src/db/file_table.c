@@ -46,9 +46,9 @@ static int   find(T *thiz, mkey_t *k, mval_t *v)
     return thiz->model->find(thiz->model, k, v);
 }
 
-static int   exist(T *thiz, mkey_t *k)
+static int   exist(T *thiz, mkey_t *k, uint64_t ver)
 {
-    return thiz->model->exist(thiz->model, k);
+    return thiz->model->exist(thiz->model, k, ver);
 }
 
 static void search_overlap(T *thiz, ftbset_t *fset, struct list_head *ovr)

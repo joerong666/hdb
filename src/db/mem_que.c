@@ -105,7 +105,7 @@ static int  find(T *thiz, const mkey_t *k, mval_t *v)
     return r;
 }
 
-static int exist(T *thiz, const mkey_t *k, mtb_t *until_pos)
+static int exist(T *thiz, const mkey_t *k, mtb_t *until_pos, uint64_t ver)
 {
     int r = 0;
     mtb_t *it;
@@ -114,7 +114,7 @@ static int exist(T *thiz, const mkey_t *k, mtb_t *until_pos)
     list_for_each_entry(it, &thiz->mlist, mnode) {
         if (it == until_pos) break;
 
-        r = it->exist(it, k);
+        r = it->exist(it, k, ver);
         if (r) break;
     }
     RWUNLOCK(&thiz->lock);

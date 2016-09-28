@@ -397,7 +397,6 @@ void *prealloc(pool_t *pool, void *p, size_t old_size, size_t new_size)
 } 
 
 #else 
-#warning "USE ZMALLOC for palloc ..................."
 #include "my_malloc.h"
 
 #define MY_Malloc my_malloc

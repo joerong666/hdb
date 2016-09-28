@@ -30,7 +30,7 @@ struct mtb_s {
     int   (*push)(T *thiz, mkv_t *kv);
     int   (*push_unsafe)(T *thiz, mkv_t *kv);
     int   (*find)(T *thiz, const mkey_t *k, mval_t *v);
-    int   (*exist)(T *thiz, const mkey_t *k);
+    int   (*exist)(T *thiz, const mkey_t *k, uint64_t ver);
     int   (*full)(T *thiz);
     int   (*restore)(T *thiz);
     int   (*write_ready)(T *thiz);
@@ -60,7 +60,7 @@ struct mtbset_s {
     int     (*push)(mtbset_t *thiz, T *item);
     int     (*trypush)(mtbset_t *thiz, T *item);
     int     (*find)(mtbset_t *thiz, const mkey_t *k, mval_t *v);
-    int     (*exist)(mtbset_t *thiz, const mkey_t *k, mtb_t *until_pos);
+    int     (*exist)(mtbset_t *thiz, const mkey_t *k, mtb_t *until_pos, uint64_t ver);
     mtb_t  *(*pop)(mtbset_t *thiz);
     mtb_t  *(*top)(mtbset_t *thiz);
     mtb_t  *(*tail)(mtbset_t *thiz);

@@ -644,15 +644,14 @@ static int find_in_leaf(T *thiz, off_t ioff, mkey_t *target, fkv_t *fkv, KCMP cm
     return -1;
 }
 
-static int find(T *thiz, mkey_t *key, mval_t *v)
+static int find_i(T *thiz, mkey_t *key, mval_t *v, mkv_t *tkv)
 {
     int r, i;
     hdr_block_t *hdr;
     off_t off;
-    mkv_t kv;
     fkv_t fkv;
 
-    fkv.kv = &kv;
+    fkv.kv = tkv;
 
     RWLOCK_READ(LOCK);
 
@@ -682,7 +681,7 @@ static int find(T *thiz, mkey_t *key, mval_t *v)
     }
 
     if (v != NULL) {
-        v->len = kv.v.len;
+        v->len = tkv->v.len;
         v->data = MY_Malloc(v->len);
 
         r = read_val(thiz->rfd, fkv.blkoff, fkv.voff, v);
@@ -692,8 +691,8 @@ static int find(T *thiz, mkey_t *key, mval_t *v)
             goto _out;
         }
 
-        kv.v.data = v->data;
-        check_fval(thiz->rfd, &kv);
+        tkv->v.data = v->data;
+        check_fval(thiz->rfd, tkv);
     }
 
     r = RC_FOUND;
@@ -705,9 +704,22 @@ _out:
     return r;
 }
 
-static int exist(T *thiz, mkey_t *key)
+static int find(T *thiz, mkey_t *key, mval_t *v)
 {
-    return find(thiz, key, NULL);
+    mkv_t tkv;
+    return find_i(thiz, key, v, &tkv);
+}
+
+static int exist(T *thiz, mkey_t *key, uint64_t ver)
+{
+    int r;
+    mkv_t tkv;
+
+    r = find_i(thiz, key, NULL, &tkv);
+    if (r == RC_NOT_FOUND) return 0;
+    if (ver == 0 || tkv.seq <= ver) return RC_FOUND;
+
+    return RC_NOT_FOUND;
 }
 
 static int split(T *thiz, T *part1, T *part2)

@@ -36,7 +36,7 @@ struct btree_s {
     int   (*merge_fin)(T *thiz);   
     off_t (*find_in_index)(T *thiz, off_t ioff, mkey_t *key, KCMP cmp);
     int   (*find)(T *thiz, mkey_t *key, mval_t *v);
-    int   (*exist)(T *thiz, mkey_t *key);
+    int   (*exist)(T *thiz, mkey_t *key, uint64_t ver);
     int   (*range_cmp)(T *thiz, T *other);
     int   (*krange_cmp)(T *thiz, mkey_t *k);
     int   (*pkrange_cmp)(T *thiz, mkey_t *k);

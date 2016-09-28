@@ -65,7 +65,6 @@
 
 #define TEST_FIN() \
     }               \
-    HIDB2(db_checkpoint)(db);   \
     PRINT(stdout, "%s finish, press any key to continue", __func__);
 
 enum l_case_e {
@@ -81,10 +80,12 @@ enum l_case_e {
     CASE_PUT_PGET = 1 << 9,
     CASE_MPUT_PGET = 1 << 10,
     CASE_SINGLE_PGET = 1 << 11,
+    CASE_SINGLE_GET = 1 << 12,
+    CASE_RANDOM_GET = 1 << 13,
 };
 
 static int l_tcase = 0, loop = 1, dbver = 1;
-static size_t l_ksize = 32, l_vsize = 1024, l_kvcnt = 100000;
+static size_t l_ksize = 32, l_vsize = 256, l_kvcnt = 100000;
 static char kpattern[512], vpattern[40960], l_prefix[512];
 
 static void test_init(T *db)
@@ -297,6 +298,45 @@ static int test_db_get(T *db)
     return 0;
 }
 
+static int test_db_random_get(T *db)
+{
+    int i, j, r, ks, vs;
+    char *kdata, *vdp;
+    struct timeval tv;
+    
+    kdata = MY_Malloc(l_ksize + 32);
+
+    TEST_START();
+    for (i = 0, j = 0; j < l_kvcnt; j++) {
+        gettimeofday(&tv, NULL);
+        srandom(tv.tv_usec);
+		i = (int)((random() / (RAND_MAX + 1.0)) * l_kvcnt);
+
+        sprintf(kdata, "%s-%d", kpattern, i);
+        ks = strlen(kdata);
+
+        if (dbver == 1) {
+#if 0
+            r = db_get(db, kdata, ks, &vdp, &vs, NULL);
+#endif
+        } else {
+            r = HIDB2(db_get)(db, kdata, ks, &vdp, &vs, NULL);
+        }
+
+        if (r == 0) {
+            WARN("i=%d, vlen=%d, vdata=%.*s", i, vs, vs, vdp);
+            MY_Free(vdp);
+        } else {
+            ERROR("%s not found or error, r=%d", kdata, r);
+        }
+    }
+
+    TEST_FIN()
+
+    MY_Free(kdata);
+    return 0;
+}
+
 static int test_db_iter(T *db)
 {
     int r, ks, vs, cnt = 0;
@@ -442,6 +482,38 @@ static int test_db_single_pget(T *db)
     return 0;
 }
 
+static int test_db_single_get(T *db)
+{
+    int r, ks, vs;
+    char *kdata, *vdp, *kdp;
+    
+    kdata = MY_Malloc(l_ksize + 32);
+
+    TEST_START();
+    sprintf(kdata, "%s", l_prefix);
+    ks = strlen(kdata);
+
+    if (dbver == 1) {
+#if 0
+        r = db_get(db, kdata, ks, &vdp, &vs, NULL);
+#endif
+    } else {
+        r = HIDB2(db_get)(db, kdata, ks, &vdp, &vs, NULL);
+    }
+
+    if (r == 0) {
+        MY_Free(vdp);
+        WARN("vs=%d, v=%.*s", vs, vdp);
+    } else {
+        WARN("%s not found or error, r=%d", kdata, r);
+    }
+
+    TEST_FIN()
+
+    MY_Free(kdata);
+    return 0;
+}
+
 #ifndef FOR_UNIT_TEST
 static void init_log()
 {
@@ -545,6 +617,18 @@ int main(int argc, char *argv[])
         read(1, buf, 1);
     }
 
+    if (l_tcase & CASE_SINGLE_GET) {
+        test_db_single_get(db);
+
+        read(1, buf, 1);
+    }
+
+    if (l_tcase & CASE_RANDOM_GET) {
+        test_db_random_get(db);
+
+        read(1, buf, 1);
+    }
+
     if (l_tcase & CASE_PGET) {
         test_db_pget(db);
 
@@ -593,14 +677,18 @@ int main(int argc, char *argv[])
         read(1, buf, 1);
     }
 
-    PRINT(stdout, "press any key to close db\n");
-    read(1, buf, 1);
-
     if (dbver == 1) {
 #if 0
         db_close(db);
 #endif
     } else {
+        PRINT(stdout, "press any key to checkpoint db\n");
+        read(1, buf, 1);
+        HIDB2(db_checkpoint)(db);
+
+        PRINT(stdout, "press any key to close db\n");
+        read(1, buf, 1);
+
         HIDB2(db_close)(db);
     }
 

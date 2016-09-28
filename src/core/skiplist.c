@@ -166,7 +166,6 @@ static int exist(T *thiz, const void *data)
 {
     void *d;
 
-    /* TODO!! check via bloom filter first */
     d = find(thiz, data);
     return (d != NULL);
 }

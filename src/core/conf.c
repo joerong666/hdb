@@ -65,7 +65,7 @@ static int fvalflt(T *thiz, fkv_t *fkv)
 static int init(T *thiz)
 {
 #if 1
-    thiz->flag |= DBCNF_IO_DIRECT;
+    /*thiz->flag |= DBCNF_IO_DIRECT;*/
     thiz->batch_size = (32 << 10);
     thiz->bin_size = (256 << 20);
     thiz->mtb_size = (32 << 20);
@@ -77,7 +77,7 @@ static int init(T *thiz)
     /* shrink if compact amount of file bigger than this */
     thiz->cpct_cnt = 1; 
 #elif 1
-    thiz->flag |= DBCNF_IO_DIRECT;
+    /*thiz->flag |= DBCNF_IO_DIRECT;*/
     thiz->batch_size = (3 << 10);
     thiz->bin_size = (8 << 20);
     thiz->mtb_size = (2 << 20);
@@ -88,7 +88,7 @@ static int init(T *thiz)
     thiz->ftb_min_kcnt = 100;
     thiz->cpct_cnt = 1;
 #elif 0
-    thiz->flag |= DBCNF_IO_DIRECT;
+    /*thiz->flag |= DBCNF_IO_DIRECT;*/
     thiz->batch_size = (10);
     thiz->bin_size = (1024);
     thiz->mtb_size = (100);

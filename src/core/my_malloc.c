@@ -43,8 +43,7 @@ void my_alignfree(void *p)
 }
 
 #else
-#warning "USE ZMALLOC instead of malloc ..................."
-#   include "zmalloc.h"
+#include "zmalloc.h"
 
 void *my_malloc(size_t sz)
 {

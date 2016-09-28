@@ -94,7 +94,7 @@ static int  find(T *thiz, mkey_t *k, mval_t *v)
     return r;
 }
 
-static int  exist(T *thiz, mkey_t *k, ftb_t *until_pos)
+static int  exist(T *thiz, mkey_t *k, ftb_t *until_pos, uint64_t ver)
 {
     int r = 0;
     ftb_t *it;
@@ -103,7 +103,7 @@ static int  exist(T *thiz, mkey_t *k, ftb_t *until_pos)
     list_for_each_entry(it, &thiz->flist, fnode) {
         if (it == until_pos) break;
 
-        r = it->exist(it, k);
+        r = it->exist(it, k, ver);
         if (r) break;
     }
     RWUNLOCK(&thiz->lock);
