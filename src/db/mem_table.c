@@ -111,6 +111,7 @@ static int push_i(T *thiz, mkv_t *nkv, int safe)
 {
     int r;
     mkv_t *okv, *kv;
+    kver_t *kver;
 
     /* nkv is a stack variable, change to heap */
     kv = MY_Calloc(sizeof(*kv));
@@ -129,6 +130,12 @@ static int push_i(T *thiz, mkv_t *nkv, int safe)
     }
 
     if (r == 1) { /* exist */
+        /* record history version */
+        kver = PCALLOC(SUPER->mpool, sizeof(*kver));
+        kver->ver = okv->seq;
+        kver->next = okv->kver_list;
+        kv->kver_list = kver;
+                    
         if (okv->type & (KV_IN_MM_CACHE | KV_IN_IM_CACHE)) {
             okv->type |= KV_DEPRECATED;
             if (!(okv->type & KV_OP_DEL)) {
@@ -493,15 +500,29 @@ _out:
 
 static int   exist(T *thiz, const mkey_t *k, uint64_t ver)
 {
+    int r = 0;
     mkv_t kv, *tkv;
+    kver_t *kver;
 
     memcpy(&kv.k, k, sizeof(*k));
 
     tkv = thiz->model->find(thiz->model, &kv);
-    if (tkv == NULL) return 0;
-    if (ver == 0 || tkv->seq <= ver) return 1;
+    if (tkv != NULL) {
+        if (ver == 0 || tkv->seq <= ver) r = 1;
+        else {
+            kver = tkv->kver_list;
+            while(kver) {
+                if (kver->ver <= ver) {
+                    r = 1;
+                    break;
+                }
+
+                kver = kver->next;
+            }
+        }
+    }
    
-    return 0;
+    return r;
 }
 
 static int empty(T *thiz)

@@ -10,14 +10,6 @@
 
 #define LEVEL_FILE_CNT(_lv)  0
 
-#if 0
-    $ date -d '2016-01-01' +%s
-      1451577600
-#define BASE_TIMESTAMP 1451577600
-#else
-#define BASE_TIMESTAMP 0
-#endif
-
 #define ATTACH_NOTICE(_nt)                  \
 {                                           \
     int _xnt = SELF->notice;                \
@@ -300,7 +292,7 @@ static int checkpoint(T *thiz)
 {
     int r = 0;
 
-    PROMPT("doing checkpoint");
+    PROMPT("notify checkpoint");
     r = db_flush(thiz);
     if (r != 0) return -1;
 
@@ -344,7 +336,7 @@ static uint64_t get_seq(T *thiz)
     if (seq == 0) {
         struct timeval tv;
         gettimeofday(&tv, NULL);
-        seq = (tv.tv_sec - BASE_TIMESTAMP) * 1e3 + tv.tv_usec * 1e-3;
+        seq = tv.tv_sec * 1e6 + tv.tv_usec;
         atomic_casv(SELF->seq, seq);
     }
 
@@ -353,40 +345,59 @@ static uint64_t get_seq(T *thiz)
 
 static void timer_thread(T *thiz)
 {
-    uint64_t seq;
     struct timeval tv;
-
-    static uint64_t i = 0, total_wr = 0;
+    static uint64_t tps_wr = 0, tps_ts = 0, ts = 0, delt_ts = 0,
+                    delt_put = 0, delt_del = 0, delt_mput = 0,
+                    delt_mdel = 0, delt_pdel = 0, delt_rd = 0;
 
     while (1) {
         if (SELF->notice & NTF_DBDESTROY) break;
 
         gettimeofday(&tv, NULL);
 
-        seq = (tv.tv_sec - BASE_TIMESTAMP) * 1e3 + tv.tv_usec * 1e-3;
-        atomic_casv(SELF->seq, seq);
+        ts = tv.tv_sec * 1e6 + tv.tv_usec;
+        atomic_casv(SELF->seq, ts);
 
-        if (++i % 1000 == 0) {
-            /* tps <= 10, notify flush */
-            if ((DB_STATS_FETCH(wr) - total_wr) <= 10) {
+        if (tv.tv_sec - tps_ts >= 1) {
+            tps_ts = tv.tv_sec;
+
+            /* update tps <= 100, notify flush */
+            if ((DB_STATS_FETCH(wr) - tps_wr) <= 100) {
                 notify(thiz, NTF_FLUSH_MMT);
             }
 
-            i = 0;
-            total_wr = SELF->stats.total_wr;
-
-            INFO("put:%"PRIu64",del:%"PRIu64",mput:%"PRIu64
-                 ",mdel:%"PRIu64",pdel:%"PRIu64",rd:%"PRIu64
-                 ,SELF->stats.total_put
-                 ,SELF->stats.total_del
-                 ,SELF->stats.total_mput
-                 ,SELF->stats.total_mdel
-                 ,SELF->stats.total_pdel
-                 ,SELF->stats.total_rd
-                 );
+            tps_wr = SELF->stats.total_wr;
         }
 
-        usleep(1000);
+        if (tv.tv_sec - delt_ts >= 60) {
+            delt_ts = tv.tv_sec;
+
+            delt_put  = SELF->stats.total_put  - delt_put;
+            delt_del  = SELF->stats.total_del  - delt_del;
+            delt_mput = SELF->stats.total_mput - delt_mput;
+            delt_mdel = SELF->stats.total_mdel - delt_mdel;
+            delt_pdel = SELF->stats.total_pdel - delt_pdel;
+            delt_rd   = SELF->stats.total_rd   - delt_rd;
+
+            PROMPT("put:%"PRIu64",del:%"PRIu64",mput:%"PRIu64
+                   ",mdel:%"PRIu64",pdel:%"PRIu64",rd:%"PRIu64
+                   ,delt_put
+                   ,delt_del
+                   ,delt_mput
+                   ,delt_mdel
+                   ,delt_pdel
+                   ,delt_rd
+                  );
+
+            delt_put  = SELF->stats.total_put ;
+            delt_del  = SELF->stats.total_del ;
+            delt_mput = SELF->stats.total_mput;
+            delt_mdel = SELF->stats.total_mdel;
+            delt_pdel = SELF->stats.total_pdel;
+            delt_rd   = SELF->stats.total_rd  ;
+        }
+
+        usleep(1);
     }
 }
 
@@ -449,13 +460,11 @@ static int   mput_i(T *thiz, mkv_t *kvs, size_t cnt)
     seq = get_seq(thiz);
 
     RWLOCK_WRITE(&SELF->mmtb->lock);
-    RWLOCK_WRITE(&SELF->mmtb->model->lock);
     for (i = 0; i < (int)cnt; i++) {
         kvs[i].seq = seq;
         r = SELF->mmtb->push_unsafe(SELF->mmtb, &kvs[i]);
         if (r != 0) break;
     }
-    RWUNLOCK(&SELF->mmtb->model->lock);
     RWUNLOCK(&SELF->mmtb->lock);
 
     if (r != 0) return -1;
@@ -507,7 +516,6 @@ static int   pdel(T *thiz, mkey_t *prefix)
     seq = get_seq(thiz);
 
     RWLOCK_WRITE(&SELF->mmtb->lock);
-    RWLOCK_WRITE(&SELF->mmtb->model->lock);
 
     it = thiz->get_iter(thiz, prefix, NULL);
     it->flag |= (IT_UNSAFE | IT_ONLY_KEY);
@@ -520,7 +528,6 @@ static int   pdel(T *thiz, mkey_t *prefix)
     }
 
     it->destroy(it);
-    RWUNLOCK(&SELF->mmtb->model->lock);
     RWUNLOCK(&SELF->mmtb->lock);
 
     return r;
@@ -589,9 +596,14 @@ static int bl_flt(const struct dirent *ent)
     return (fnmatch("*"DB_BIN_EXT, ent->d_name, 0) == 0);
 }
 
-static int dt_flt(const struct dirent *ent)
+static int dt_flt_L0(const struct dirent *ent)
 {
-    return (fnmatch("*"DB_DATA_EXT, ent->d_name, 0) == 0);
+    return (fnmatch("*_0"DB_DATA_EXT, ent->d_name, 0) == 0);
+}
+
+static int dt_flt_L1(const struct dirent *ent)
+{
+    return (fnmatch("*_1"DB_DATA_EXT, ent->d_name, 0) == 0);
 }
 
 static int file_cmp(const void *a, const void *b)
@@ -670,10 +682,15 @@ static int   recover_bl(T *thiz)
         free(namelist);
     }
 
+    if (SELF->mmtb != NULL && SELF->mmtb->full(SELF->mmtb)) {
+        SELF->imq->push(SELF->imq, SELF->mmtb);
+        SELF->mmtb = NULL;
+    }
+
     return 0;
 }
 
-static int   recover_dt(T *thiz)
+static int   recover_dt_Ln(T *thiz, int lv)
 {
     int r = 0, level = 0, m, n;
     uint64_t fnum = 0;
@@ -684,7 +701,12 @@ static int   recover_dt(T *thiz)
     ftbset_t *fset;
 
     AB_PATH_DATA(fname, thiz->conf);
-    m = n = scandir(fname, &namelist, dt_flt, file_cmp);
+    if (lv == 0) {
+        m = n = scandir(fname, &namelist, dt_flt_L0, file_cmp);
+    } else {
+        m = n = scandir(fname, &namelist, dt_flt_L1, file_cmp);
+    }
+
     if (n == -1) {
         ERROR("scandir %s, errno=%d", fname, errno);
         return -1;
@@ -700,8 +722,8 @@ static int   recover_dt(T *thiz)
             continue;
         }
 
-        if (level >= thiz->conf->db_level) {
-            ERROR("%s dblevel=%d exceed %d, skip", ent->d_name, level, thiz->conf->db_level);
+        if (level != lv) {
+            ERROR("%s level %d!=%d, skip", ent->d_name, level, lv);
             continue;
         }
 
@@ -732,9 +754,16 @@ static int   recover_dt(T *thiz)
         fset = thiz->fsets[level];
         r = fset->push(fset, ftb);
         if (r != 0) {
-            ERROR("push %s fail, backup", ent->d_name);
-            ftb->backup(ftb);
-            ftb->destroy(ftb);
+            if (lv != 0) {
+                ERROR("push %s fail, move to level-0", ent->d_name);
+                r = thiz->fsets[0]->push(thiz->fsets[0], ftb);
+            }
+           
+            if (r != 0) {
+                ERROR("push %s to level-0 fail, backup", ent->d_name);
+                ftb->backup(ftb);
+                ftb->destroy(ftb);
+            }
         }
     }
 
@@ -744,6 +773,18 @@ static int   recover_dt(T *thiz)
         }
 
         free(namelist);
+    }
+
+    return 0;
+}
+
+static int   recover_dt(T *thiz)
+{
+    int r, i;
+
+    for (i = thiz->conf->db_level - 1; i >= 0; i--) {
+        r = recover_dt_Ln(thiz, i);
+        if (r != 0) return -1;
     }
 
     return 0;
@@ -838,18 +879,21 @@ static void ntf_write_bin(T *thiz)
 static void do_mtb_dump(T *thiz)
 {
     int r;
-    ftbset_t *fsets = thiz->fsets[0];
+    uint64_t fnum;
+    char fname[G_MEM_MID];
     mtb_t *mtb;
     ftb_t *ftb = NULL;
+    ftbset_t *fsets = thiz->fsets[0];
 
     mtb = SELF->imq->top(SELF->imq);
 
     notify(thiz, NTF_FLUSH_IMQ);
     mtb->flush_wait(mtb);
 
+    fnum = next_fnum(thiz);
     ftb = ftb_create(NULL);
     ftb->conf = thiz->conf;
-    DATA_FILE(ftb->file, thiz->conf, next_fnum(thiz), 0);
+    TMP_FILE(ftb->file, thiz->conf, fnum);
 
     r = ftb->init(ftb);
     if (r != 0) goto _out;
@@ -857,6 +901,10 @@ static void do_mtb_dump(T *thiz)
     INFO("store %s via %s", ftb->file, mtb->file);
     r = ftb->store(ftb, mtb);
     if (r != 0) goto _out;
+
+    DATA_FILE(fname, thiz->conf, fnum, 0);
+    rename(ftb->file, fname);
+    strcpy(ftb->file, fname);
 
     r = fsets->push(fsets, ftb);
     if (r != 0) goto _out;

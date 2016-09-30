@@ -74,8 +74,18 @@ static void search_overlap(T *thiz, ftbset_t *fset, struct list_head *ovr)
     }
 }
 
+static void backup_file(T *thiz)
+{
+    backup(thiz->conf, thiz->file);
+}
+
+static void clean(T *thiz)
+{
+    recycle(thiz->conf, thiz->file);
+}
+
 /****************************************
-** basic declaration
+** basic function 
 *****************************************/
 static int init(T *thiz)
 {
@@ -90,16 +100,6 @@ static int init(T *thiz)
     thiz->model = m;
 
     return 0;
-}
-
-static void backup_file(T *thiz)
-{
-    backup(thiz->conf, thiz->file);
-}
-
-static void clean(T *thiz)
-{
-    recycle(thiz->conf, thiz->file);
 }
 
 static void destroy(T *thiz)
@@ -141,8 +141,3 @@ T *ftb_create(pool_t *mpool)
 
      return thiz;           
 }
-
-/****************************************
-** private function
-*****************************************/
-

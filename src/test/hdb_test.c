@@ -682,9 +682,11 @@ int main(int argc, char *argv[])
         db_close(db);
 #endif
     } else {
+#if 0
         PRINT(stdout, "press any key to checkpoint db\n");
         read(1, buf, 1);
         HIDB2(db_checkpoint)(db);
+#endif
 
         PRINT(stdout, "press any key to close db\n");
         read(1, buf, 1);

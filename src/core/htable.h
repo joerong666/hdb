@@ -28,7 +28,6 @@ struct htable_s {
     int flag;
     int cap;    /* capacity */
     int tb_cnt; 
-    rwlock_t lock;
 
     HTCMP cmp;
     HASHFUNC hfunc;

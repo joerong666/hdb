@@ -154,11 +154,7 @@ _out:
 static int prepare_file(T *thiz)
 {
     if (thiz->wfd == -1) {
-        if (thiz->conf->flag & DBCNF_IO_DIRECT) {
-            thiz->wfd = open(thiz->file, O_CREAT | O_RDWR | O_DIRECT, 0644);
-        } else {
-            thiz->wfd = open(thiz->file, O_CREAT | O_RDWR, 0644);
-        }
+        thiz->wfd = open(thiz->file, O_CREAT | O_RDWR, 0644);
 
         if (thiz->wfd == -1) {
             ERROR("open %s, errno=%d", thiz->file, errno);

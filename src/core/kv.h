@@ -24,12 +24,18 @@ typedef struct val_s {
     char *data; 
 } mval_t;
 
+typedef struct kver_s {
+    uint64_t ver;
+    struct kver_s *next;
+} kver_t;
+
 typedef struct kv_s {
     uint16_t type;   /* type of value, normal val or file name */
     uint16_t vcrc; /* value crc */
     uint64_t seq;
     mkey_t  k;
     mval_t  v;
+    kver_t *kver_list;
 } mkv_t;
 
 typedef struct fkv_s {

@@ -141,7 +141,7 @@ static int check_mkexist(T *thiz, mkv_t *kv, mtb_t *tb)
     if (r) return r;
 
     mq = thiz->imq;
-    r = mq->exist(mq, &kv->k, tb, thiz->version);
+    r = mq->exist(mq, &kv->k, tb, 0);
     if (r) return r;
 
     return 0;
@@ -173,11 +173,11 @@ static int check_fkexist(T *thiz, fkv_t *fkv, ftb_t *tb)
     if (r) return r;
 
     mq = thiz->imq;
-    r = mq->exist(mq, &k, NULL, thiz->version);
+    r = mq->exist(mq, &k, NULL, 0);
     if (r) return r;
 
     fq = SELF->fq_L0;
-    r = fq->exist(fq, &k, tb, thiz->version);
+    r = fq->exist(fq, &k, tb, 0);
     if (r) return r;
 
     return 0;
@@ -215,9 +215,12 @@ static int it_mmt(T *thiz, mkv_t *kv)
     htiter_t *iter = SELF->miter;
 
     if (!(thiz->flag & IT_BEG)) {
-        RWLOCK_READ(&tb->lock);
-        SELF->lock_flag |= LOCK_MMT;
+        if (!(thiz->flag & IT_UNSAFE)) {
+            RWLOCK_READ(&tb->lock);
+            SELF->lock_flag |= LOCK_MMT;
+        }
 
+        CONSOLE_DEBUG("start iterate mmtb");
         thiz->flag |= IT_BEG;
 
         iter = tb->model->get_iter(tb->model, SELF->mstartptr, SELF->mstopptr, SELF->htcmp);
@@ -256,8 +259,12 @@ static int it_mmt(T *thiz, mkv_t *kv)
             SELF->miter = NULL;
             thiz->flag &= ~IT_BEG;
 
-            SELF->lock_flag &= ~LOCK_MMT;
-            RWUNLOCK(&tb->lock);
+            if (SELF->lock_flag & LOCK_MMT) {
+                SELF->lock_flag &= ~LOCK_MMT;
+                RWUNLOCK(&tb->lock);
+            }
+
+            CONSOLE_DEBUG("finish iterate mmtb");
             break;
         }
     } while(1);
@@ -341,12 +348,12 @@ static int it_file(T *thiz, int lv, mkv_t *kv)
     ftbset_t *fq = lv > 0 ? SELF->fq_Ln : SELF->fq_L0;
 
     if (!(thiz->flag & IT_BEG)) {
+        RWLOCK_READ(&fq->lock);
+
         thiz->flag |= IT_BEG;
 
         if (lv > 0) SELF->lock_flag |= LOCK_Ln;
         else SELF->lock_flag |= LOCK_L0;
-
-        RWLOCK_READ(&fq->lock);
 
         if (list_empty(&fq->flist)) return 0;
 

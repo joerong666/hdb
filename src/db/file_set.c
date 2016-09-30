@@ -99,14 +99,12 @@ static int  exist(T *thiz, mkey_t *k, ftb_t *until_pos, uint64_t ver)
     int r = 0;
     ftb_t *it;
 
-    RWLOCK_READ(&thiz->lock);
     list_for_each_entry(it, &thiz->flist, fnode) {
         if (it == until_pos) break;
 
         r = it->exist(it, k, ver);
         if (r) break;
     }
-    RWUNLOCK(&thiz->lock);
 
     return r;
 }

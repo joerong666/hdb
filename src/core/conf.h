@@ -68,10 +68,6 @@ typedef int32_t (*DB_KFILTER)(char *, size_t);
 typedef int32_t (*DB_VFILTER)(const char *, size_t, int *expire);
 #endif
 
-enum cnf_flg_e {
-    DBCNF_IO_DIRECT = 1,
-};
-
 struct conf_s {
     /* must be the first field */
     obj_t  super;
