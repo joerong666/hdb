@@ -4,6 +4,11 @@
 
 #ifndef USE_ZMALLOC
 
+void *my_strdup(char *p)
+{
+    return strdup(p);
+}
+
 void *my_malloc(size_t sz)
 {
     return malloc(sz);
@@ -44,6 +49,11 @@ void my_alignfree(void *p)
 
 #else
 #include "zmalloc.h"
+
+void *my_strdup(char *p)
+{
+    return zstrdup(p);
+}
 
 void *my_malloc(size_t sz)
 {

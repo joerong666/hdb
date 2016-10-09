@@ -74,7 +74,8 @@ static int init(T *thiz)
 
     thiz->ftb_min_kcnt = 10240;
     /* shrink if compact amount of file bigger than this */
-    thiz->cpct_cnt = 1; 
+    thiz->shrink_cpct_cnt = 1; 
+    thiz->vcache_cnt = 256; /* val cache block count */
 #elif 1
     thiz->batch_size = (3 << 10);
     thiz->bin_size = (8 << 20);
@@ -84,7 +85,8 @@ static int init(T *thiz)
     thiz->imq_limit = 2;
 
     thiz->ftb_min_kcnt = 100;
-    thiz->cpct_cnt = 1;
+    thiz->shrink_cpct_cnt = 1; 
+    thiz->vcache_cnt = 10;
 #elif 0
     thiz->batch_size = (10);
     thiz->bin_size = (1024);
@@ -94,7 +96,8 @@ static int init(T *thiz)
     thiz->imq_limit = 1;
 
     thiz->ftb_min_kcnt = 100;
-    thiz->cpct_cnt = 1;
+    thiz->shrink_cpct_cnt = 1; 
+    thiz->vcache_cnt = 10;
 #endif
 
     return 0;

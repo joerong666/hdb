@@ -29,7 +29,7 @@ typedef struct hdr_block_s {
     char    magic[8];
     uint8_t blktype;
     uint8_t version;
-    uint8_t cpct_cnt;
+    uint8_t shrink_cpct_cnt;
     uint8_t tree_heigh;
     uint16_t filter_cnt;
     uint32_t node_cnt;

@@ -78,19 +78,3 @@ htiter_t *htiter_create(pool_t *mpool);
 
 #undef T
 #endif
-
-
-#if 0   /* you may use these hash func */
-  
-unsigned int JSHash(char* str, unsigned int len)  
-{  
-   unsigned int hash = 1315423911;  
-   unsigned int i    = 0;  
-  
-   for(i=0; i<len; str++, i++) {   
-      hash ^= ((hash<<5) + toupper(*str) + (hash>>2));  
-   }   
-   return hash;  
-}  
-
-#endif

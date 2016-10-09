@@ -317,7 +317,7 @@ int seri_hdr(char *blkbuf, hdr_block_t *hdr)
     hp = enc_fix32(hp, hdr->key_cnt);
 
     *hp++ = hdr->tree_heigh & 0xFF;
-    *hp++ = hdr->cpct_cnt & 0xFF;
+    *hp++ = hdr->shrink_cpct_cnt & 0xFF;
     *hp++ = hdr->beg.len & 0xFF;
 
     memcpy(hp, hdr->beg.data, hdr->beg.len);
@@ -370,7 +370,7 @@ int deseri_hdr(hdr_block_t *hdr, char *blkbuf)
     hdr->key_cnt = dec_fix32(hp, &hp);
 
     hdr->tree_heigh = *hp++;
-    hdr->cpct_cnt = *hp++;
+    hdr->shrink_cpct_cnt = *hp++;
 
     hdr->beg.len = *hp++;
 
@@ -407,12 +407,12 @@ int read_val(int fd, uint32_t blkoff, uint32_t voff, mval_t *v)
         sz = blksize - voff - BTR_BLK_TAILER_SIZE;
 
         if (left <= sz) {
-            r = pread(fd, dp, left, blkoff + voff);
+            r = io_pread(fd, dp, left, blkoff + voff);
             if (r != left) goto _out;
 
             left = 0;
         } else {
-            r = pread(fd, dp, sz, blkoff + voff);
+            r = io_pread(fd, dp, sz, blkoff + voff);
             if (r != sz) goto _out;
 
             left -= sz;

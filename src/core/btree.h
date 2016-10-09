@@ -25,6 +25,7 @@ struct btree_s {
     struct btree_pri *pri;
 
     /* methods */
+    int   (*init)(T *thiz);
     void  (*destroy)(T *thiz);
 
     int   (*store)(T *thiz, htable_t *htb);   

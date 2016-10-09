@@ -196,7 +196,7 @@ static ftb_t *search_cpct_tb(T *thiz, int cpct_type)
             hdr = it->model->hdr;
             cnf = it->conf;
 
-            if (hdr->cpct_cnt > cnf->cpct_cnt) {
+            if (hdr->shrink_cpct_cnt > cnf->shrink_cpct_cnt) {
                 ftb = it;
             }
             RWUNLOCK(&it->model->lock);

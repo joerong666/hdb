@@ -93,10 +93,7 @@ static int init(T *thiz)
     m->file = thiz->file;
     m->conf = thiz->conf;
 
-#if 0   /* FIXME!! may need init */
-    if (m->init(m) != 0) return -1;
-#endif
-
+    m->init(m);
     thiz->model = m;
 
     return 0;

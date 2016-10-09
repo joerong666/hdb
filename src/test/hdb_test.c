@@ -78,10 +78,11 @@ enum l_case_e {
     CASE_PGET = 1 << 7,
     CASE_PUT_GET = 1 << 8,
     CASE_PUT_PGET = 1 << 9,
-    CASE_MPUT_PGET = 1 << 10,
-    CASE_SINGLE_PGET = 1 << 11,
-    CASE_SINGLE_GET = 1 << 12,
-    CASE_RANDOM_GET = 1 << 13,
+    CASE_MPUT_PGET = 1 << 10,    /* 1024 */
+    CASE_SINGLE_PGET = 1 << 11,  /* 2048 */
+    CASE_SINGLE_GET = 1 << 12,   /* 4096 */
+    CASE_RANDOM_GET = 1 << 13,   /* 8192 */
+    CASE_MULTI_RANDOM_GET = 1 << 14, /* 16384 */
 };
 
 static int l_tcase = 0, loop = 1, dbver = 1;
@@ -307,6 +308,11 @@ static int test_db_random_get(T *db)
     kdata = MY_Malloc(l_ksize + 32);
 
     TEST_START();
+#if 0
+    PRINT(stdout, "press to start random_get", __func__);
+    getchar();
+#endif
+
     for (i = 0, j = 0; j < l_kvcnt; j++) {
         gettimeofday(&tv, NULL);
         srandom(tv.tv_usec);
@@ -331,6 +337,10 @@ static int test_db_random_get(T *db)
         }
     }
 
+#if 0
+    PRINT(stdout, "press to finish random_get", __func__);
+    getchar();
+#endif
     TEST_FIN()
 
     MY_Free(kdata);
@@ -517,7 +527,7 @@ static int test_db_single_get(T *db)
 #ifndef FOR_UNIT_TEST
 static void init_log()
 {
-    static int g_log_level = PF_LOG_WARN;
+    static int g_log_level = PF_LOG_DEBUG;
     static pf_log_config_t g_log_cnf;
 
     pf_log_init_config(&g_log_cnf);
@@ -625,6 +635,18 @@ int main(int argc, char *argv[])
 
     if (l_tcase & CASE_RANDOM_GET) {
         test_db_random_get(db);
+
+        read(1, buf, 1);
+    }
+
+    if (l_tcase & CASE_MULTI_RANDOM_GET) {
+        pthread_t gth1, gth2;
+
+        pthread_create(&gth1, NULL, test_db_random_get, db);
+        pthread_create(&gth2, NULL, test_db_random_get, db);
+
+        pthread_join(gth1, NULL);
+        pthread_join(gth2, NULL);
 
         read(1, buf, 1);
     }

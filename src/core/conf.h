@@ -82,7 +82,8 @@ struct conf_s {
     size_t mtb_mxsize;      /* blocking if memtable reach this size */
     size_t ftb_size;        /* file table size */
     size_t ftb_min_kcnt;    
-    size_t cpct_cnt;
+    size_t shrink_cpct_cnt;
+    size_t vcache_cnt;
     size_t tmp_fnum;
 
     rwlock_t lock;

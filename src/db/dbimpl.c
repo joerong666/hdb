@@ -379,7 +379,7 @@ static void timer_thread(T *thiz)
             delt_pdel = SELF->stats.total_pdel - delt_pdel;
             delt_rd   = SELF->stats.total_rd   - delt_rd;
 
-            PROMPT("put:%"PRIu64",del:%"PRIu64",mput:%"PRIu64
+            INFO("put:%"PRIu64",del:%"PRIu64",mput:%"PRIu64
                    ",mdel:%"PRIu64",pdel:%"PRIu64",rd:%"PRIu64
                    ,delt_put
                    ,delt_del

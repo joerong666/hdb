@@ -339,7 +339,7 @@ static int init(T *thiz, btree_t *base)
     thiz->conf = base->conf;
 #if 1
     thiz->hdr->fend_off = base->hdr->fend_off;
-    thiz->hdr->cpct_cnt = base->hdr->cpct_cnt + 1;
+    thiz->hdr->shrink_cpct_cnt = base->hdr->shrink_cpct_cnt + 1;
     thiz->hdr->version = DB_FILE_VERSION;
     thiz->hdr->blktype = BTR_HEADER_BLK;
     strncpy(thiz->hdr->magic, DB_MAGIC_NUM, sizeof(thiz->hdr->magic));

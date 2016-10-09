@@ -5,6 +5,7 @@
 #include "htable.h"
 #include "btree.h"
 #include "btree_saver.h"
+#include "vcache.h"
 
 #define T btree_t
 #define HDRBLK_KRANGE_OFF 20
@@ -18,6 +19,8 @@ struct btree_pri {
     int (*mg_filter)(fkv_t *);
     btsaver_t *mg_sv;
     btriter_t *mg_iter;
+
+    vcache_t *vcache;
 };
 
 static int range_cmp(T *thiz, T *other)
@@ -640,6 +643,67 @@ static int find_in_leaf(T *thiz, off_t ioff, mkey_t *target, fkv_t *fkv, KCMP cm
     return -1;
 }
 
+static int get_val(T *thiz, fkv_t *fkv, mval_t *v)
+{
+    char *blkbuf, *dp, cache_id[64];
+    ssize_t r, left, sz = 0;
+    uint32_t blksize, blkoff, voff, need_cache;
+
+    left = v->len;
+    dp = v->data;
+    blksize = BTR_VAL_BLK_SIZE;
+    blkoff = fkv->blkoff;
+    voff = fkv->voff;
+
+    do {
+        need_cache = 0;
+        sz = blksize - voff - BTR_BLK_TAILER_SIZE;
+        sprintf(cache_id, "%u", blkoff);
+
+        RWLOCK_READ(&SELF->vcache->lock);
+        blkbuf = SELF->vcache->get(SELF->vcache, cache_id);
+        if (blkbuf == NULL) {
+            need_cache = 1;
+            blkbuf = MY_Malloc(blksize); 
+
+            r = io_pread(thiz->rfd, blkbuf, blksize, blkoff);
+            if (r != blksize) {
+                MY_Free(blkbuf);
+                RWUNLOCK(&SELF->vcache->lock);
+                return -1;
+            }
+        } else {
+            DEBUG("hit vcache");
+        }
+
+        if (left <= sz) {
+            memcpy(dp, blkbuf + voff, left);
+            left = 0;
+        } else {
+            memcpy(dp, blkbuf + voff, sz);
+
+            left -= sz;
+            dp += sz;
+
+            blkoff += blksize;
+            voff = BTR_VAL_BLK_MSIZE - BTR_BLK_TAILER_SIZE;
+        }
+        RWUNLOCK(&SELF->vcache->lock);
+
+        if (need_cache) {
+            RWLOCK_WRITE(&SELF->vcache->lock);
+            r = SELF->vcache->push(SELF->vcache, cache_id, blkbuf);
+            if (r != 0) {
+                MY_Free(blkbuf);
+            }
+            RWUNLOCK(&SELF->vcache->lock);
+        }
+
+    } while (left > 0);
+
+    return 0;
+}
+
 static int find_i(T *thiz, mkey_t *key, mval_t *v, mkv_t *tkv)
 {
     int r, i;
@@ -680,7 +744,12 @@ static int find_i(T *thiz, mkey_t *key, mval_t *v, mkv_t *tkv)
         v->len = tkv->v.len;
         v->data = MY_Malloc(v->len);
 
+#if 0
         r = read_val(thiz->rfd, fkv.blkoff, fkv.voff, v);
+#else
+        r = get_val(thiz, &fkv, v);
+#endif
+
         if (r != 0) {
             r = RC_ERR;
             MY_Free(v->data);
@@ -863,13 +932,18 @@ static void destroy(btree_t *thiz)
 
     close(thiz->wfd);
     close(thiz->rfd);
+    SELF->vcache->release(SELF->vcache);
 
     del_obj(thiz);
 }
 
-static int _init(T *thiz)
+static int init(T *thiz)
 {
     RWLOCK_INIT(LOCK);
+
+    SELF->vcache = vcache_create(SUPER->mpool);
+    SELF->vcache->cap = thiz->conf->vcache_cnt;
+    SELF->vcache->init(SELF->vcache);
 
     thiz->hdr = PCALLOC(SUPER->mpool, sizeof(hdr_block_t));
 #if 1
@@ -884,6 +958,12 @@ static int _init(T *thiz)
     thiz->rfd = -1;
     thiz->wfd = -1;
 
+    return 0;
+}
+
+static int _init(T *thiz)
+{
+    ADD_METHOD(init);
     ADD_METHOD(destroy);
     ADD_METHOD(store);
     ADD_METHOD(restore);

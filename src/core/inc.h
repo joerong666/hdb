@@ -27,10 +27,11 @@
 #include <limits.h>
 #include <dirent.h>
 
-#include "crc.h"
+#include "hash_func.h"
 #include "list.h"
 #include "palloc.h"
 #include "obj.h"
+#include "crc.h"
 #include "buf.h"
 #include "rwlock.h"
 #include "kv.h"
@@ -61,6 +62,7 @@
 #    define PROMPT log_prompt
 #endif
 
+#define MY_Strdup my_strdup
 #define MY_Malloc my_malloc
 #define MY_Calloc my_calloc
 #define MY_Realloc my_realloc
