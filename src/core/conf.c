@@ -16,7 +16,7 @@ static int mkeyflt(T *thiz, mkv_t *kv)
 
 static int mvalflt(T *thiz, mkv_t *kv)
 {
-    if (thiz->vflt && thiz->vflt(kv->v.data, kv->v.len, NULL)) {
+    if (thiz->vflt && kv->v.len > 0 && thiz->vflt(kv->v.data, kv->v.len, NULL)) {
         INFO("vflitered k=%.*s", kv->k.len, kv->k.data);
         return 1;
     }
@@ -66,16 +66,20 @@ static int init(T *thiz)
 {
 #if 1
     thiz->batch_size = (32 << 10);
-    thiz->bin_size = (256 << 20);
+    thiz->bin_size = (512 << 20);
     thiz->mtb_size = (32 << 20);
-    thiz->ftb_size = (128 << 20);
+    thiz->ftb_size = (256 << 20);
     thiz->db_level = DB_MAX_LEVEL;
     thiz->imq_limit = 10;
 
-    thiz->ftb_min_kcnt = 10240;
+    thiz->ftb_min_kcnt = 20480;
     /* shrink if compact amount of file bigger than this */
-    thiz->shrink_cpct_cnt = 1; 
-    thiz->vcache_cnt = 256; /* val cache block count */
+    thiz->shrink_cpct_cnt = 5; 
+
+    thiz->vcache = 67; /* use prime num, eg: 67/127/257, val cache block count */
+    thiz->flag |= DBCNF_PREFETCH_KCACHE;
+    /* thiz->flag |= DBCNF_PREFETCH_VCACHE; */
+
 #elif 1
     thiz->batch_size = (3 << 10);
     thiz->bin_size = (8 << 20);
@@ -86,18 +90,22 @@ static int init(T *thiz)
 
     thiz->ftb_min_kcnt = 100;
     thiz->shrink_cpct_cnt = 1; 
-    thiz->vcache_cnt = 10;
-#elif 0
+
+    thiz->vcache = 7; /* use prime num, eg: 67/127/257, val cache block count */
+    thiz->flag |= DBCNF_PREFETCH_KCACHE;
+    thiz->flag |= DBCNF_PREFETCH_VCACHE;
+
+#elif 1
     thiz->batch_size = (10);
-    thiz->bin_size = (1024);
-    thiz->mtb_size = (100);
-    thiz->ftb_size = (2 << 20);
+    thiz->bin_size = (10 << 20);
+    thiz->mtb_size = (10 << 10);
+    thiz->ftb_size = (10 << 10);
     thiz->db_level = DB_MAX_LEVEL;
     thiz->imq_limit = 1;
 
     thiz->ftb_min_kcnt = 100;
     thiz->shrink_cpct_cnt = 1; 
-    thiz->vcache_cnt = 10;
+    thiz->vcache = 127;
 #endif
 
     return 0;

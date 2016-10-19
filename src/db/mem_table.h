@@ -15,6 +15,8 @@ struct mtb_s {
     char file[G_MEM_MID];
     int fd;
     int flag;
+    uint32_t mtb_size;
+    uint32_t bin_size;
     rwlock_t lock;
     conf_t *conf;
     htable_t *model;
@@ -68,6 +70,8 @@ struct mtbset_s {
     int     (*flush)(mtbset_t *thiz);
     void    (*flush_wait)(mtbset_t *thiz);
     void    (*flush_notify)(mtbset_t *thiz);
+
+    char   *(*stats_info)(mtbset_t *thiz);
 };
 
 T *mtb_create(pool_t *mpool);

@@ -169,7 +169,7 @@ void HIDB2(db_close)(db_t *db)
 {
     db->dbimpl->close(db->dbimpl);
 
-#if 1 /* for fast quit, skip destroy */
+#if 0 /* for fast quit, skip destroy */
     db_destroy(db);
 #endif
 }
@@ -281,11 +281,17 @@ static iter_t *get_iter(db_t *db, mkey_t *start, mkey_t *stop)
 iter_t *HIDB2(db_pget)(db_t *db, char *kprefix, size_t ks)
 {
     mkey_t k;
+    iter_t *it;
+    dbit_impl_t *itimpl;
+
     k.data = kprefix;
     k.len = (uint8_t)ks;
 
-    DEBUG("pget k=%.*s", ks, kprefix);
-    return get_iter(db, &k, NULL);
+    it = iter_create();
+    itimpl = db->dbimpl->pget(db->dbimpl, &k);
+    it->itimpl = itimpl;
+
+    return it;
 }
 
 int HIDB2(db_pdel)(db_t *db, char *kprefix, size_t ks)
@@ -294,7 +300,6 @@ int HIDB2(db_pdel)(db_t *db, char *kprefix, size_t ks)
     pk.data = kprefix;
     pk.len = ks;
 
-    DEBUG("pdel k=%.*s", ks, kprefix);
     return db->dbimpl->pdel(db->dbimpl, &pk);
 }
 

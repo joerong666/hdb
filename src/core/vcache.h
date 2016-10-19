@@ -9,6 +9,7 @@ struct vcache_s {
     obj_t  super;
 
     int cap;
+    int size;
     rwlock_t lock;
 
     struct vcache_pri *pri;
@@ -16,10 +17,9 @@ struct vcache_s {
     /* methods */
     int   (*init)(T *thiz);
     void  (*destroy)(T *thiz);
-    void  (*release)(T *thiz);
 
-    int   (*push)(T *thiz, char *id, void *data);   
-    void *(*get)(T *thiz, char *id);
+    int   (*push)(T *thiz, uint32_t id, void *data);   
+    void *(*get)(T *thiz, uint32_t id);
 };
 
 T *vcache_create(pool_t *mpool);

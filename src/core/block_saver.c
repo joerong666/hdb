@@ -53,6 +53,7 @@ struct blksaver_pri {
     int key_cnt;
     size_t left;
     uint32_t vblkoff;
+    uint16_t kgrp[BTR_INDEX_KGRP];
 
     mkey_t last_k;
     mkey_t share_k;
@@ -64,6 +65,7 @@ struct blksaver_pri {
 
 static int seri_blk_meta(T *thiz, char *blkbuf)
 {
+    int i;
     char *p = blkbuf + 4;
 
     *p = thiz->blktype & 0xFF;
@@ -73,6 +75,11 @@ static int seri_blk_meta(T *thiz, char *blkbuf)
         case BTR_LEAF_BLK:
         case BTR_INDEX_BLK:
             p = enc_fix16(p, SELF->key_cnt);
+            for (i = 0; i < BTR_INDEX_KGRP; i++) {
+                if (SELF->kgrp[i] == 0) break;
+
+                p = enc_fix16(p, SELF->kgrp[i]);
+            }
             break;
         case BTR_VAL_BLK:
             /* anything to do ? */
@@ -182,6 +189,7 @@ static int new_block(T *thiz)
     SELF->tchain = SELF->chain;
 
     SELF->left = thiz->blksize - thiz->meta_size;
+    memset(SELF->kgrp, 0x00, sizeof(SELF->kgrp));
 
     return r;
 }
@@ -279,6 +287,21 @@ static int save_val_item(T *thiz, fkv_t *item)
     return 0;
 }
 
+static void save_kgrp(T *thiz)
+{
+    int i, pgrp;
+
+    if (thiz->blktype == BTR_INDEX_BLK) 
+        pgrp = BTR_KCNT_PER_IGRP;
+    else
+        pgrp = BTR_KCNT_PER_LGRP;
+
+    i = SELF->key_cnt / pgrp;
+    if ((SELF->key_cnt % pgrp) == 0 && i > 0 && i <= BTR_INDEX_KGRP) {
+        SELF->kgrp[i - 1] = thiz->blksize - SELF->left - BTR_BLK_TAILER_SIZE;
+    }
+}
+
 static int save_index_item(T *thiz, fkv_t *item)
 {
     int r = 0, item_size;
@@ -321,6 +344,8 @@ static int save_index_item(T *thiz, fkv_t *item)
     if (pt != m) {
         APPEND_BUF_CHAIN((uint8_t *)pt, m - pt);
     }
+
+    save_kgrp(thiz);
 
     SELF->left -= item_size;
     SELF->key_cnt++;

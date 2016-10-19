@@ -1,5 +1,6 @@
 #include <unistd.h>
 #include <stdlib.h>
+#include <string.h>
 #include "my_malloc.h"
 
 #ifndef USE_ZMALLOC

@@ -68,6 +68,9 @@ typedef int32_t (*DB_KFILTER)(char *, size_t);
 typedef int32_t (*DB_VFILTER)(const char *, size_t, int *expire);
 #endif
 
+#define DBCNF_PREFETCH_KCACHE 1
+#define DBCNF_PREFETCH_VCACHE (1 << 1)
+
 struct conf_s {
     /* must be the first field */
     obj_t  super;
@@ -83,7 +86,7 @@ struct conf_s {
     size_t ftb_size;        /* file table size */
     size_t ftb_min_kcnt;    
     size_t shrink_cpct_cnt;
-    size_t vcache_cnt;
+    size_t vcache;
     size_t tmp_fnum;
 
     rwlock_t lock;

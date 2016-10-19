@@ -77,12 +77,14 @@ ssize_t io_pwrite(int fd, const void *buf, size_t count, off_t offset)
 
 static int seek_prefix(char *s1, size_t len1, char *s2, size_t len2)
 {
-    /* TODO!! */
-    UNUSED(s1);
-    UNUSED(s2);
-    UNUSED(len1);
-    UNUSED(len2);
-    return 0;
+    size_t i, min;
+   
+    min = len1 < len2 ? len1 : len2;
+    for (i = 0; i < min; i++) {
+        if (s1[i] != s2[i]) break;
+    }
+
+    return i;
 }
 
 static int calc_share_size(mkey_t *share, mkey_t *delt)
@@ -101,9 +103,9 @@ int seri_keyitem_size(fkv_t *fkv, mkey_t *share, mkey_t *delt)
     int slen = calc_share_size(share, delt);
 
     if (slen > 0) {
-        fkv->kv->type |= KV_KTP_DELT;
+        ATOMIC_ATTACH(fkv->kv->type, KV_KTP_DELT);
     } else {
-        fkv->kv->type &= ~KV_KTP_DELT;
+        ATOMIC_DETACH(fkv->kv->type, KV_KTP_DELT);
     }
  
     fkv->kshare.len = slen;
@@ -396,24 +398,28 @@ int deseri_hdr(hdr_block_t *hdr, char *blkbuf)
     return 0;
 }
 
-int read_val(int fd, uint32_t blkoff, uint32_t voff, mval_t *v)
+int read_val(int fd, fkv_t *fkv, mval_t *v)
 {
-    ssize_t r = 0;
-    char *dp = v->data;
-    ssize_t left = v->len, sz = 0;
-    uint32_t blksize = BTR_VAL_BLK_SIZE;
+    ssize_t r, left, sz = 0;
+    uint32_t blksize, blkoff, voff;
+    char blkbuf[BTR_VAL_BLK_SIZE], *dp;
+
+    left = v->len;
+    dp = v->data;
+    blksize = BTR_VAL_BLK_SIZE;
+    blkoff = fkv->blkoff;
+    voff = fkv->voff;
 
     do {
         sz = blksize - voff - BTR_BLK_TAILER_SIZE;
+        r = io_pread(fd, blkbuf, blksize, blkoff);
+        if (r != blksize) return -1;
 
         if (left <= sz) {
-            r = io_pread(fd, dp, left, blkoff + voff);
-            if (r != left) goto _out;
-
+            memcpy(dp, blkbuf + voff, left);
             left = 0;
         } else {
-            r = io_pread(fd, dp, sz, blkoff + voff);
-            if (r != sz) goto _out;
+            memcpy(dp, blkbuf + voff, sz);
 
             left -= sz;
             dp += sz;
@@ -423,16 +429,68 @@ int read_val(int fd, uint32_t blkoff, uint32_t voff, mval_t *v)
         }
     } while (left > 0);
 
-    /* ASSERT(left == 0) */
-    if (left != 0) r = -1;
-
-_out:
-    if (r == -1) {
-        ERROR("pread errno=%d", errno);
-        return -1;
-    }
-
     return 0;
+}
+
+int read_vcache(vcache_t *vc, int fd, fkv_t *fkv, mval_t *v)
+{
+    ssize_t r, left, sz = 0, need_cache;
+    uint32_t blksize, blkoff, voff, cache_id;
+    char *blkbuf = NULL, *dp;
+
+    left = v->len;
+    dp = v->data;
+    blksize = BTR_VAL_BLK_SIZE;
+    blkoff = fkv->blkoff;
+    voff = fkv->voff;
+
+    do {
+        need_cache = 0;
+        sz = blksize - voff - BTR_BLK_TAILER_SIZE;
+        cache_id = blkoff;
+
+        RWLOCK_READ(&vc->lock);
+        blkbuf = vc->get(vc, cache_id);
+
+        if (blkbuf == NULL) {
+            need_cache = 1;
+
+            blkbuf = MY_Malloc(blksize); 
+            r = io_pread(fd, blkbuf, blksize, blkoff);
+            if (r != blksize) {
+                MY_Free(blkbuf);
+                RWUNLOCK(&vc->lock);
+                return -1;
+            }
+        }
+
+        if (left <= sz) {
+            memcpy(dp, blkbuf + voff, left);
+            left = 0;
+        } else {
+            memcpy(dp, blkbuf + voff, sz);
+
+            left -= sz;
+            dp += sz;
+
+            blkoff += blksize;
+            voff = BTR_VAL_BLK_MSIZE - BTR_BLK_TAILER_SIZE;
+        }
+
+        RWUNLOCK(&vc->lock);
+
+        if (need_cache) {
+            RWLOCK_WRITE(&vc->lock);
+            r = vc->push(vc, cache_id, blkbuf);
+            if (r != 0) {
+                MY_Free(blkbuf);
+            }
+            RWUNLOCK(&vc->lock);
+        }
+
+    } while (left > 0);
+
+    return need_cache;
 }
 
 int wrap_block_crc(char *blkbuf, size_t blksize)
@@ -531,8 +589,8 @@ ssize_t deseri_bin_kv(char *buf, off_t xoff, size_t len, mkv_t *kv)
     crc = dec_fix32(p, &p);
     sz  = dec_fix32(p, &p);
 
-    if (len < sz + 4) {
-        ERROR("binlog err, len=%zd, sz=%d", len, sz);
+    if ((len - xoff) < sz) {
+        ERROR("binlog err, left=%ld, rec_size=%u", (off_t)len - xoff, sz);
         return FLG_BIN_EOF;
     }
 
@@ -662,7 +720,7 @@ int extract_fval(int fd, fkv_t *fkv)
     }
 
     fkv->kv->v.data = MY_Malloc(fkv->kv->v.len);
-    r = read_val(fd, fkv->blkoff, fkv->voff, &fkv->kv->v);
+    r = read_val(fd, fkv, &fkv->kv->v);
     if (r != 0) {
         MY_Free(fkv->kv->v.data);
         return -1;

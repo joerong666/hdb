@@ -9,6 +9,7 @@ enum mt_e {
 };
 
 struct mtbset_pri {
+    char msg[G_MEM_SML];
     int flag;
     pthread_mutex_t flush_mtx;
     pthread_cond_t  flush_cond;
@@ -170,6 +171,32 @@ static void flush_notify(T *thiz)
     pthread_mutex_unlock(&SELF->flush_mtx);
 }
 
+static char *stats_info(T *thiz)
+{
+    uint64_t tb_cnt, kvsize = 0;
+    char *p, *q;
+    mtb_t *tb;
+    
+    p = q = SELF->msg;
+    memset(p, 0x00, sizeof(SELF->msg));
+
+    RWLOCK_READ(&thiz->lock);
+    tb_cnt = thiz->mlist_len;
+    
+    list_for_each_entry(tb, &thiz->mlist, mnode) {
+        kvsize += tb->mtb_size;
+    }
+    RWUNLOCK(&thiz->lock);
+
+    snprintf(p, sizeof(SELF->msg), 
+             "qlen:%"PRIu64", qsize:%"PRIu64
+             ,tb_cnt
+             ,kvsize
+            );
+
+    return SELF->msg;
+}
+
 static int _init(T *thiz)
 {
     RWLOCK_INIT(&thiz->lock);
@@ -188,6 +215,7 @@ static int _init(T *thiz)
     ADD_METHOD(flush  );
     ADD_METHOD(flush_wait);
     ADD_METHOD(flush_notify);
+    ADD_METHOD(stats_info);
 
     return 0;
 }

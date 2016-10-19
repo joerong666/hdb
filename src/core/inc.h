@@ -136,14 +136,14 @@
 #define atomic_casv(__x, __val)     __sync_val_compare_and_swap(&(__x), __x, __val)
 #define atomic_casb(__x, __val)     __sync_bool_compare_and_swap(&(__x), __x, __val)
 
-#define ATOMIC_ATTACH_FLAG(_flg, _x) do {       \
+#define ATOMIC_ATTACH(_flg, _x) do {       \
     int _xflg = _flg;                           \
     _xflg |= (_x);                              \
     _xflg = atomic_casv(_flg, _xflg);           \
 } while(0)
 
 /* assign for avoiding warning */
-#define ATOMIC_DETACH_FLAG(_flg, _x) do {       \
+#define ATOMIC_DETACH(_flg, _x) do {       \
     int _xflg = _flg;                           \
     _xflg &= ~(_x);                             \
     _xflg = atomic_casv(_flg, _xflg);           \
@@ -272,6 +272,7 @@ enum rc_code
 
     RC_NOT_FOUND = 0,
     RC_FOUND = 1,   
+    RC_FILTERED = 2,
     RC_EXIST = 2,   
 
     RC_MAX,        /* as a sentinel, don't use this as a meaningful value */

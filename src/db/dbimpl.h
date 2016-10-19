@@ -19,30 +19,27 @@ struct dbimpl_s {
     struct dbimpl_pri *pri;
 
     /* methods */
-    void  (*destroy)(T *thiz);
+    void         (*destroy)(T *thiz);
 
-    int   (*open)(T *thiz, const char *path, const char *conf_str);
-    int   (*config)(T *thiz, const char *conf_str);   
-    int   (*prepare)(T *thiz);   
-    int   (*put)(T *thiz, mkv_t *kv);   
-    int   (*del)(T *thiz, mkey_t *k);   
-    int   (*get)(T *thiz, mkey_t *k, mval_t *v);   
-    int   (*mput)(T *thiz, mkv_t *kvs, size_t cnt);   
-    int   (*mdel)(T *thiz, mkey_t *keys, size_t cnt);   
-    int   (*pdel)(T *thiz, mkey_t *prefix);   
-    int   (*exist)(T *thiz, mkey_t *k);   
-    int   (*recover)(T *thiz);
-    int   (*repaire)(T *thiz);
-    int   (*flush)(T *thiz);   
-    int   (*checkpoint)(T *thiz);   
+    int          (*open)(T *thiz, const char *path, const char *conf_str);
+    int          (*config)(T *thiz, const char *conf_str);   
+    int          (*prepare)(T *thiz);   
+    int          (*put)(T *thiz, mkv_t *kv);   
+    int          (*del)(T *thiz, mkey_t *k);   
+    int          (*get)(T *thiz, mkey_t *k, mval_t *v);   
+    int          (*mput)(T *thiz, mkv_t *kvs, size_t cnt);   
+    int          (*mdel)(T *thiz, mkey_t *keys, size_t cnt);   
+    dbit_impl_t *(*pget)(T *thiz, mkey_t *prefix);   
+    int          (*pdel)(T *thiz, mkey_t *prefix);   
+    int          (*exist)(T *thiz, mkey_t *k);   
+    int          (*recover)(T *thiz);
+    int          (*repaire)(T *thiz);
+    int          (*flush)(T *thiz);   
+    int          (*checkpoint)(T *thiz);   
 
-    void  (*close)(T *thiz);   
+    void         (*close)(T *thiz);   
 
     dbit_impl_t *(*get_iter)(T *thiz, mkey_t *start, mkey_t *stop);   
-
-#if 0   /* TODO!! */
-    char        *(*get_conf)(T *thiz);   
-#endif
 };
 
 

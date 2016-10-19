@@ -19,8 +19,6 @@ struct btree_pri {
     int (*mg_filter)(fkv_t *);
     btsaver_t *mg_sv;
     btriter_t *mg_iter;
-
-    vcache_t *vcache;
 };
 
 static int range_cmp(T *thiz, T *other)
@@ -86,12 +84,92 @@ static int pkrange_cmp(T *thiz, mkey_t *k)
     return 0;
 }
 
+static int get_stats(T *thiz, hdr_block_t *hdr)
+{
+    memset(hdr, 0x00, sizeof(*hdr));
+
+    RWLOCK_READ(&thiz->lock);
+    memcpy(hdr, thiz->hdr, sizeof(*hdr));
+    memset(&thiz->hdr->stat, 0x00, sizeof(thiz->hdr->stat));
+    RWUNLOCK(&thiz->lock);
+
+    return 0;
+}
+
+static void prefetch(T *thiz, hdr_block_t *hdr)
+{
+    int i, n, s, e, m, vmax;
+    char *p, tmp[BTR_INDEX_BLK_SIZE], *q;
+
+    if (thiz->conf->flag & DBCNF_PREFETCH_KCACHE) {
+        p = hdr->map_buf;
+        n = hdr->map_size / BTR_INDEX_BLK_SIZE;
+        for (i = 0; i < n; i++) {
+            memcpy(tmp, p, BTR_INDEX_BLK_SIZE);
+            p += BTR_INDEX_BLK_SIZE;
+        }
+    }
+
+    if (thiz->conf->vcache > 0 && (thiz->conf->flag & DBCNF_PREFETCH_VCACHE)) {
+        s = thiz->hdr->fend_off;
+        e = hdr->leaf_off;
+        m = e - s;
+        if (m >= BTR_VAL_BLK) {
+            p = mmap(NULL, m, PROT_READ, MAP_PRIVATE, thiz->rfd, s);
+            if (hdr->map_buf == MAP_FAILED) {
+                ERROR("mmap errno=%d", errno);
+            } else {
+                vmax = hdr->vcache->cap * BTR_VAL_BLK_SIZE;
+                for (i = 0; i < m && i < vmax;) {
+                    q = MY_Malloc(BTR_VAL_BLK_SIZE);
+                    memcpy(q, p + i, BTR_VAL_BLK_SIZE);
+                    hdr->vcache->push(hdr->vcache, s + i, q);
+                    i += BTR_VAL_BLK_SIZE;
+                }
+
+                munmap(p, m);
+            }
+        }
+    }
+}
+
+static int map_new_hdr(T *thiz, hdr_block_t *hdr)
+{
+    size_t pz = getpagesize();
+
+    if (hdr->leaf_off < pz) {
+        hdr->map_off = 0;
+    } else {
+        hdr->map_off = hdr->leaf_off;
+    }
+
+    hdr->map_size = hdr->fend_off - hdr->map_off;
+    hdr->map_buf = mmap(NULL, hdr->map_size, PROT_READ, MAP_PRIVATE, thiz->rfd, hdr->map_off);
+
+    if (hdr->map_buf == MAP_FAILED) {
+        ERROR("mmap errno=%d", errno);
+        return -1;
+    }
+
+    hdr->vcache = vcache_create(NULL);
+    hdr->vcache->cap = thiz->conf->vcache;
+    hdr->vcache->init(hdr->vcache);
+
+    prefetch(thiz, hdr);
+
+    return 0;
+}
+
 static int update_hdr(T *thiz, hdr_block_t *hdr)
 {
     int r = 0;
-    size_t hdr_off, pz = getpagesize();
-    char *buf;
+    size_t hdr_off;
     hdr_block_t *h;
+
+    if (hdr->key_cnt > 0) {
+        r = map_new_hdr(thiz, hdr);
+        if (r != 0) return -1;
+    }
 
     RWLOCK_WRITE(LOCK);
     SELF->mg_state = MG_STATE_NORMAL;
@@ -101,43 +179,20 @@ static int update_hdr(T *thiz, hdr_block_t *hdr)
         goto _out;
     }
 
-    buf = thiz->hdr->map_buf;
-    if (buf != NULL) {
-        r = munmap(buf, thiz->hdr->map_size);
-        if (r == -1) {
-            ERROR("munmap errno=%d", errno);
-            goto _out;
-        }
-
-        buf = thiz->hdr->map_buf = NULL;
+    if (thiz->hdr->map_buf != NULL) {
+        munmap(thiz->hdr->map_buf, thiz->hdr->map_size);
     }
 
-    if (buf == NULL) {  /* re-mmap */
-        if (hdr->leaf_off < pz) {
-            hdr->map_off = 0;
-        } else {
-            hdr->map_off = hdr->leaf_off;
-        }
-
-        hdr->map_size = hdr->fend_off - hdr->map_off;
-        buf = mmap(NULL, hdr->map_size, PROT_READ, MAP_PRIVATE, thiz->rfd, hdr->map_off);
-
-        if (buf == MAP_FAILED) {
-            ERROR("mmap errno=%d", errno);
-            r = -1;
-            goto _out;
-        }
-
-        madvise(buf, hdr->map_size, MADV_WILLNEED);
+    if (thiz->hdr->vcache != NULL) {
+        thiz->hdr->vcache->destroy(thiz->hdr->vcache);
     }
 
     memcpy(thiz->hdr, hdr, sizeof(*hdr));
-    thiz->hdr->map_buf = buf;
 
     h = thiz->hdr;
 
     hdr_off = h->fend_off - h->map_off - BTR_HEADER_BLK_SIZE;
-    h->beg.data = (buf + hdr_off + HDRBLK_KRANGE_OFF + 1);
+    h->beg.data = (h->map_buf + hdr_off + HDRBLK_KRANGE_OFF + 1);
     h->end.data = (h->beg.data + h->beg.len + 1);
 
     INFO("update %s\n"
@@ -164,7 +219,7 @@ static int prepare_file(T *thiz)
             return -1;
         }
     }
-
+#if 0
     if (thiz->rfd == -1) {
         thiz->rfd = open(thiz->file, O_CREAT | O_RDONLY, 0644);
         if (thiz->rfd == -1) {
@@ -172,6 +227,9 @@ static int prepare_file(T *thiz)
             return -1;
         }
     }
+#else
+    thiz->rfd = thiz->wfd;
+#endif
 
     return 0;
 }
@@ -363,6 +421,7 @@ static int restore(T *thiz)
     hdr_block_t hdr;
 
     INFO("restoring %s", thiz->file);
+    memset(&hdr, 0x00, sizeof(hdr));
 
     r = prepare_file(thiz);
     if (r != 0) return -1;
@@ -561,9 +620,89 @@ _out:
 *  0 => not found
 *  >0 => child offset
 */
+static char *locate_kgrp(int blktype, char *blkbuf, mkey_t *target, KCMP cmp, int *detect)
+{
+    int r = 0, start, end, mid, n, share_ks, delt_ks, key_cnt, pgrp;
+    uint16_t kgrp[BTR_INDEX_KGRP + 1];
+    char *pb, *p, kdata[G_MEM_SML];
+    mkey_t k;
+
+    k.data = kdata;
+    memset(kgrp, 0x00, sizeof(kgrp));
+
+    p = blkbuf + BTR_BLK_TAILER_SIZE;
+    key_cnt = dec_fix16(p, NULL);
+    ASSERT(key_cnt > 0);
+
+    kgrp[0] = BTR_INDEX_BLK_MSIZE - BTR_BLK_TAILER_SIZE;
+    p  = blkbuf + BTR_BLK_TAILER_SIZE + 2;
+
+#if 0
+    *detect = key_cnt;
+    return (blkbuf + kgrp[0]);
+#else
+    for (n = 1; n <= BTR_INDEX_KGRP; n++) {
+        kgrp[n] = dec_fix16(p, &p);
+        if (kgrp[n] == 0) break;
+    }
+
+    if (n == 1) {
+        *detect = key_cnt;
+        return (blkbuf + kgrp[0]);
+    }
+
+    pb = blkbuf + kgrp[0];
+    pb = move_to_key_pos(blktype, pb);
+
+    start = mid = 0;
+    end   = n - 1;
+    while(start <= end) {
+        mid = start + (end - start) / 2;
+
+        p = blkbuf + kgrp[mid];
+        p = move_to_klen_pos(blktype, p);
+        
+        share_ks = *p++;
+        delt_ks  = *p++;
+        ASSERT((share_ks + delt_ks) >= 0 && (share_ks + delt_ks) < G_KSIZE_LIMIT);
+
+        k.len = share_ks + delt_ks;
+
+        if (share_ks > 0) memcpy(k.data, pb, share_ks);
+        memcpy(k.data + share_ks, p, delt_ks);
+
+        r = cmp(target, &k);
+        if (r < 0) {
+            end = mid - 1;
+        } else if (r > 0) {
+            start = mid + 1;
+        } else {
+            break;
+        }
+    }
+
+    if (r >= 0) {
+        r = mid;
+    } else {
+        r = mid > 0 ? mid - 1 : 0;
+    }
+
+    pgrp = blktype == BTR_INDEX_BLK ? BTR_KCNT_PER_IGRP : BTR_KCNT_PER_LGRP;
+    /* detect in group or out of all groups */
+    if (r >= n - 1) {
+        *detect = key_cnt - (n - 1) * pgrp;
+    } else {
+        *detect = pgrp;
+    }
+
+    p = blkbuf + kgrp[r];
+    return p;
+#endif
+}
+
 off_t find_in_index(T *thiz, off_t ioff, mkey_t *target, KCMP cmp)
 {
-    int r, type, key_cnt, i;
+    int r, type, i, detect;
     off_t toff, child_off = 0;
     uint16_t share_ks, delt_ks;
     char *blkbuf, *pb, *p, kdata[G_KSIZE_LIMIT];
@@ -573,15 +712,12 @@ off_t find_in_index(T *thiz, off_t ioff, mkey_t *target, KCMP cmp)
     blkbuf = thiz->hdr->map_buf + ioff;
     k.data = kdata;
     
-    p = blkbuf + BTR_BLK_TAILER_SIZE;
-    key_cnt = dec_fix16(p, NULL);
-
-    p = pb = blkbuf + BTR_INDEX_BLK_MSIZE - BTR_BLK_TAILER_SIZE;
+    pb = blkbuf + BTR_INDEX_BLK_MSIZE - BTR_BLK_TAILER_SIZE;
     pb = move_to_key_pos(BTR_INDEX_BLK, pb);
 
-    ASSERT(key_cnt > 0);
+    p = locate_kgrp(BTR_INDEX_BLK, blkbuf, target, kcmp, &detect);
 
-    for (i = 0; i < key_cnt; i++) {
+    for (i = 0; i < detect; i++) {
         type = *p++;
 
         toff = child_off;
@@ -610,7 +746,7 @@ off_t find_in_index(T *thiz, off_t ioff, mkey_t *target, KCMP cmp)
 
 static int find_in_leaf(T *thiz, off_t ioff, mkey_t *target, fkv_t *fkv, KCMP cmp)
 {
-    int r = -1, key_cnt, i;
+    int r = -1, i, detect;
     char *blkbuf, *pb, *p, *pt, kdata[G_KSIZE_LIMIT];
     mkey_t k;
     KCMP kcmp = cmp ? cmp : key_cmp;
@@ -619,15 +755,12 @@ static int find_in_leaf(T *thiz, off_t ioff, mkey_t *target, fkv_t *fkv, KCMP cm
     k.data = kdata;
     fkv->blktype = BTR_LEAF_BLK;
     
-    p = blkbuf + BTR_BLK_TAILER_SIZE;
-    key_cnt = dec_fix16(p, NULL);
-
-    p = pb = blkbuf + BTR_LEAF_BLK_MSIZE - BTR_BLK_TAILER_SIZE;
+    pb = blkbuf + BTR_LEAF_BLK_MSIZE - BTR_BLK_TAILER_SIZE;
     pb = move_to_key_pos(BTR_LEAF_BLK, pb);
 
-    ASSERT(key_cnt > 0);
+    p = locate_kgrp(BTR_LEAF_BLK, blkbuf, target, kcmp, &detect);
 
-    for (i = 0; i < key_cnt; i++) {
+    for (i = 0; i < detect; i++) {
         pt = move_to_key_pos(fkv->blktype, p);
         p = deseri_kmeta(fkv, p);
 
@@ -645,63 +778,19 @@ static int find_in_leaf(T *thiz, off_t ioff, mkey_t *target, fkv_t *fkv, KCMP cm
 
 static int get_val(T *thiz, fkv_t *fkv, mval_t *v)
 {
-    char *blkbuf, *dp, cache_id[64];
-    ssize_t r, left, sz = 0;
-    uint32_t blksize, blkoff, voff, need_cache;
+    ssize_t r;
 
-    left = v->len;
-    dp = v->data;
-    blksize = BTR_VAL_BLK_SIZE;
-    blkoff = fkv->blkoff;
-    voff = fkv->voff;
+    if (thiz->conf->vcache > 0) {
+        r = read_vcache(thiz->hdr->vcache, thiz->rfd, fkv, v);
+        if (r == 0) atomic_incr_a(thiz->hdr->stat.io_hit);
+        else if (r == 1) atomic_incr_a(thiz->hdr->stat.cache_hit);
+    } else {
+        r = read_val(thiz->rfd, fkv, v);
+        if (r == 0) atomic_incr_a(thiz->hdr->stat.io_hit);
+    }
 
-    do {
-        need_cache = 0;
-        sz = blksize - voff - BTR_BLK_TAILER_SIZE;
-        sprintf(cache_id, "%u", blkoff);
-
-        RWLOCK_READ(&SELF->vcache->lock);
-        blkbuf = SELF->vcache->get(SELF->vcache, cache_id);
-        if (blkbuf == NULL) {
-            need_cache = 1;
-            blkbuf = MY_Malloc(blksize); 
-
-            r = io_pread(thiz->rfd, blkbuf, blksize, blkoff);
-            if (r != blksize) {
-                MY_Free(blkbuf);
-                RWUNLOCK(&SELF->vcache->lock);
-                return -1;
-            }
-        } else {
-            DEBUG("hit vcache");
-        }
-
-        if (left <= sz) {
-            memcpy(dp, blkbuf + voff, left);
-            left = 0;
-        } else {
-            memcpy(dp, blkbuf + voff, sz);
-
-            left -= sz;
-            dp += sz;
-
-            blkoff += blksize;
-            voff = BTR_VAL_BLK_MSIZE - BTR_BLK_TAILER_SIZE;
-        }
-        RWUNLOCK(&SELF->vcache->lock);
-
-        if (need_cache) {
-            RWLOCK_WRITE(&SELF->vcache->lock);
-            r = SELF->vcache->push(SELF->vcache, cache_id, blkbuf);
-            if (r != 0) {
-                MY_Free(blkbuf);
-            }
-            RWUNLOCK(&SELF->vcache->lock);
-        }
-
-    } while (left > 0);
-
-    return 0;
+    if (r >= 0) return 0;
+    else return -1;
 }
 
 static int find_i(T *thiz, mkey_t *key, mval_t *v, mkv_t *tkv)
@@ -742,22 +831,19 @@ static int find_i(T *thiz, mkey_t *key, mval_t *v, mkv_t *tkv)
 
     if (v != NULL) {
         v->len = tkv->v.len;
-        v->data = MY_Malloc(v->len);
 
-#if 0
-        r = read_val(thiz->rfd, fkv.blkoff, fkv.voff, v);
-#else
-        r = get_val(thiz, &fkv, v);
-#endif
+        if (v->len > 0) {
+            v->data = MY_Malloc(v->len);
+            r = get_val(thiz, &fkv, v);
+            if (r != 0) {
+                r = RC_ERR;
+                MY_Free(v->data);
+                goto _out;
+            }
 
-        if (r != 0) {
-            r = RC_ERR;
-            MY_Free(v->data);
-            goto _out;
+            tkv->v.data = v->data;
+            check_fval(thiz->rfd, tkv);
         }
-
-        tkv->v.data = v->data;
-        check_fval(thiz->rfd, tkv);
     }
 
     r = RC_FOUND;
@@ -771,8 +857,19 @@ _out:
 
 static int find(T *thiz, mkey_t *key, mval_t *v)
 {
+    int r;
     mkv_t tkv;
-    return find_i(thiz, key, v, &tkv);
+    r = find_i(thiz, key, v, &tkv);
+
+    if (r == RC_FOUND) {
+        if (thiz->conf->mkeyflt(thiz->conf, &tkv)) {
+            r = RC_FILTERED;
+        } else if (thiz->conf->mvalflt(thiz->conf, &tkv)) {
+            r = RC_FILTERED;
+        }
+    }
+
+    return r;
 }
 
 static int exist(T *thiz, mkey_t *key, uint64_t ver)
@@ -931,8 +1028,12 @@ static void destroy(btree_t *thiz)
     }
 
     close(thiz->wfd);
+#if 0
     close(thiz->rfd);
-    SELF->vcache->release(SELF->vcache);
+#endif
+    if (thiz->hdr->vcache != NULL) {
+        thiz->hdr->vcache->destroy(thiz->hdr->vcache);
+    }
 
     del_obj(thiz);
 }
@@ -941,19 +1042,8 @@ static int init(T *thiz)
 {
     RWLOCK_INIT(LOCK);
 
-    SELF->vcache = vcache_create(SUPER->mpool);
-    SELF->vcache->cap = thiz->conf->vcache_cnt;
-    SELF->vcache->init(SELF->vcache);
-
     thiz->hdr = PCALLOC(SUPER->mpool, sizeof(hdr_block_t));
-#if 1
     thiz->hdr->fend_off = BTR_HEADER_BLK_SIZE;
-#else
-    thiz->hdr->fend_off = BTR_HEADER_BLK_SIZE;
-    thiz->hdr->version = DB_FILE_VERSION;
-    thiz->hdr->blktype = BTR_HEADER_BLK;
-    strncpy(thiz->hdr->magic, DB_MAGIC_NUM, sizeof(thiz->hdr->magic));
-#endif
 
     thiz->rfd = -1;
     thiz->wfd = -1;
@@ -982,6 +1072,7 @@ static int _init(T *thiz)
     ADD_METHOD(shrink);
     ADD_METHOD(invalid);
     ADD_METHOD(get_iter);
+    ADD_METHOD(get_stats);
 
     return 0;
 }

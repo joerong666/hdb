@@ -24,8 +24,6 @@ typedef struct mtkvlist_s {
 
 struct mtb_pri {
     int flag;
-    uint32_t mtb_size;
-    uint32_t bin_size;
 
     pthread_mutex_t flush_mtx;
     pthread_cond_t  flush_cond;
@@ -42,8 +40,8 @@ static int full(T *thiz)
 {
     int r = 0;
 
-    if (SELF->mtb_size >= thiz->conf->mtb_size
-        || SELF->bin_size >= thiz->conf->bin_size) r = 1;
+    if (thiz->mtb_size >= thiz->conf->mtb_size
+        || thiz->bin_size >= thiz->conf->bin_size) r = 1;
 
     return r;
 }
@@ -117,7 +115,12 @@ static int push_i(T *thiz, mkv_t *nkv, int safe)
     kv = MY_Calloc(sizeof(*kv));
     memcpy(kv, nkv, sizeof(*kv));
 
-    r = thiz->model->push(thiz->model, kv, (void **)&okv);
+    if (safe) {
+        r = thiz->model->push(thiz->model, kv, (void **)&okv);
+    } else {
+        r = thiz->model->push_unsafe(thiz->model, kv, (void **)&okv);
+    }
+
     if (r == -1) {
         MY_Free(kv);
         return r;
@@ -139,26 +142,26 @@ static int push_i(T *thiz, mkv_t *nkv, int safe)
         if (okv->type & (KV_IN_MM_CACHE | KV_IN_IM_CACHE)) {
             okv->type |= KV_DEPRECATED;
             if (!(okv->type & KV_OP_DEL)) {
-                SELF->mtb_size -= okv->v.len;
+                thiz->mtb_size -= okv->v.len;
             }
         } else {
             MY_Free(okv->k.data);
 
             if (!(okv->type & KV_OP_DEL)) {
-                SELF->mtb_size -= okv->v.len;
+                thiz->mtb_size -= okv->v.len;
                 MY_Free(okv->v.data);
             }
 
             MY_Free(okv);
         }
     } else {
-        SELF->mtb_size += kv->k.len;
+        thiz->mtb_size += kv->k.len;
     }
 
-    SELF->bin_size += kv->k.len;
+    thiz->bin_size += kv->k.len;
     if (!(kv->type & KV_OP_DEL)) {
-        SELF->bin_size += kv->v.len;
-        SELF->mtb_size += kv->v.len;
+        thiz->bin_size += kv->v.len;
+        thiz->mtb_size += kv->v.len;
         SELF->mm_kvlist->bytes += kv->v.len;
     }
 
@@ -357,30 +360,28 @@ static void flush_notify(T *thiz)
 #define FLG_BIN_EOF 0
 #define FLG_BIN_OK 1
 
-static int bin_read(char *buf, int len, int *off, mkv_t *kv)
+static int bin_read(char *buf, int fsize, int *off, mkv_t *kv)
 {
-    int r, xoff, xlen;
+    int r, xoff;
     mkv_t tkv;
 
     memset(&tkv, 0x0, sizeof(mkv_t));
 
-    xlen = len;
     xoff = *off;
 
-    if (xoff >= len) {
-        if (xoff > len) {
-            ERROR("offset exceeds flen, off=%d, flen=%d", xoff, len);
+    if (xoff >= fsize) {
+        if (xoff > fsize) {
+            ERROR("offset exceeds flen, off=%d, fsize=%d", xoff, fsize);
         }
 
         return FLG_BIN_EOF;
     }
 
     while (1) {
-        r = deseri_bin_kv(buf, xoff, xlen, &tkv);
+        r = deseri_bin_kv(buf, xoff, fsize, &tkv);
         if (r == FLG_BIN_EOF) return r;
         else if (r == RC_ERR) {
             xoff++;
-            xlen--;
             continue;
         }
         
@@ -433,43 +434,49 @@ static int restore(T *thiz)
         kv = MY_Calloc(sizeof(*kv));
 
         r = bin_read(buf, st.st_size, &off, kv);
-        if (r == RC_ERR) {
-            r = -1;
-            goto _out;
-        } else if (r == FLG_BIN_EOF) break;
+        if (r == FLG_BIN_EOF) {
+            MY_Free(kv);
+            break;
+        }
 
         r = thiz->model->push_unsafe(thiz->model, kv, (void **)&okv);
-        if (r == -1) goto _out;
+        if (r == -1) {
+            MY_Free(kv->k.data);
+            MY_Free(kv->v.data);
+            MY_Free(kv);
+            goto _out;
+        }
 
         ASSERT( r == 0 || r == 1);
 
         if (r == 1) {
             MY_Free(okv->k.data);
             if (okv->type & KV_OP_DEL) {
-                SELF->mtb_size -= okv->v.len;
+                thiz->mtb_size -= okv->v.len;
             } else {
-                SELF->mtb_size += kv->v.len;
-                SELF->mtb_size -= okv->v.len;
+                thiz->mtb_size += kv->v.len;
+                thiz->mtb_size -= okv->v.len;
                 MY_Free(okv->v.data);
             }
             MY_Free(okv);
         } else {
-            SELF->mtb_size += kv->k.len;
+            thiz->mtb_size += kv->k.len;
             if (!(kv->type & KV_OP_DEL)) {
-                SELF->mtb_size += kv->v.len;
+                thiz->mtb_size += kv->v.len;
             }
         }
     }
 
 _out:
     if (buf) munmap(buf, st.st_size);
-    SELF->bin_size = lseek(thiz->fd, 0, SEEK_END);
+    thiz->bin_size = lseek(thiz->fd, 0, SEEK_END);
 
     return r;
 }
 
 static int   find(T *thiz, const mkey_t *k, mval_t *v)
 {
+    int r = RC_FOUND;
     mkv_t kv, *tkv;
 
     v->data = NULL;
@@ -478,24 +485,31 @@ static int   find(T *thiz, const mkey_t *k, mval_t *v)
     RWLOCK_READ(&thiz->lock);
 
     tkv = thiz->model->find(thiz->model, &kv);
-    if (tkv == NULL) goto _out;
-    if (tkv->type & KV_OP_DEL) {
-        tkv = NULL;
+    if (tkv == NULL) {
+        r = RC_NOT_FOUND;
         goto _out;
     }
-    
-    v->len = tkv->v.len;
-    v->data = MY_Malloc(v->len);
-    
-    memcpy(v->data, tkv->v.data, v->len);
+
+    if (!(tkv->type & KV_OP_DEL)) {
+        v->len = tkv->v.len;
+        
+        if (v->len > 0) {
+            v->data = MY_Malloc(v->len);
+            memcpy(v->data, tkv->v.data, v->len);
+        }
+    }
+
+    if (thiz->conf->mkeyflt(thiz->conf, tkv)) {
+        r = RC_FILTERED;
+    } else if (thiz->conf->mvalflt(thiz->conf, tkv)) {
+        r = RC_FILTERED;
+    }
     
 _out:
 
     RWUNLOCK(&thiz->lock);
 
-    if (v->data == NULL) return RC_NOT_FOUND;
-    
-    return RC_FOUND;
+    return r;
 }
 
 static int   exist(T *thiz, const mkey_t *k, uint64_t ver)

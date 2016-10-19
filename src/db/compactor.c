@@ -102,6 +102,8 @@ static int do_upgrade(compactor_t *thiz, ftb_t *ftb)
         dfset->flist_len++;
     }
 
+    dfset->ajust_index(dfset);
+
     RWUNLOCK(&dfset->lock);
     RWUNLOCK(&sfset->lock);
 
@@ -196,6 +198,8 @@ _out:
     if (thiz->type == CPCT_MAJOR) {
         RWUNLOCK(&thiz->dst_fset->lock);
     }
+
+    thiz->dst_fset->ajust_index(thiz->dst_fset);
     RWUNLOCK(&thiz->src_fset->lock);
 
     return r;
@@ -333,6 +337,8 @@ static int cpct_split(compactor_t *thiz)
             tb2->destroy(tb2);
         }
     }
+
+    sfset->ajust_index(sfset);
     RWUNLOCK(&sfset->lock);
 
  
@@ -405,6 +411,8 @@ static int cpct_shrink(compactor_t *thiz)
             tb1->destroy(tb1);
         }
     }
+
+    sfset->ajust_index(sfset);
     RWUNLOCK(&sfset->lock);
 
  

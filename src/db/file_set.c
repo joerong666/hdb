@@ -3,8 +3,12 @@
 
 #define T ftbset_t
 #define FTB_FLG_ON_CPCT 1
+#define FINDEX_CNT 4096
 
 struct ftbset_pri {
+    char msg[G_MEM_BIG];
+    int  findex_cnt;
+    ftb_t **findex;
 };
 
 static int  len(T *thiz)
@@ -81,13 +85,37 @@ static int  push(T *thiz, ftb_t *item)
 
 static int  find(T *thiz, mkey_t *k, mval_t *v)
 {
-    int r = RC_NOT_FOUND;
+    int r = RC_NOT_FOUND, start, end, mid, r2;
     ftb_t *it;
 
     RWLOCK_READ(&thiz->lock);
-    list_for_each_entry(it, &thiz->flist, fnode) {
-        r = it->find(it, k, v);
-        if (r == RC_FOUND || r == RC_ERR) break;
+    if (thiz->flag & FSET_FLG_ORDERED) {
+        start = mid = 0;
+        end   = SELF->findex_cnt - 1;
+
+        while(start <= end) {
+            mid = start + (end - start) / 2;
+
+            it = SELF->findex[mid];
+            r2 = it->model->krange_cmp(it->model, k);
+            if (r2 > 0) {
+                end = mid - 1;
+            } else if (r2 < 0) {
+                start = mid + 1;
+            } else {
+                break;
+            }
+        }
+
+        if (r2 == 0) {
+            r = it->find(it, k, v);
+        }
+
+    } else {
+        list_for_each_entry(it, &thiz->flist, fnode) {
+            r = it->find(it, k, v);
+            if (r == RC_FOUND || r == RC_ERR) break;
+        }
     }
     RWUNLOCK(&thiz->lock);
 
@@ -191,17 +219,19 @@ static ftb_t *search_cpct_tb(T *thiz, int cpct_type)
     }
 
     if (cpct_type == CPCT_SHRINK) {
-        list_for_each_entry(it, &thiz->flist, fnode) {
-            RWLOCK_READ(&it->model->lock);
-            hdr = it->model->hdr;
-            cnf = it->conf;
+        if (thiz->flist_len > 4) { /* limit shrink condition */
+            list_for_each_entry(it, &thiz->flist, fnode) {
+                RWLOCK_READ(&it->model->lock);
+                hdr = it->model->hdr;
+                cnf = it->conf;
 
-            if (hdr->shrink_cpct_cnt > cnf->shrink_cpct_cnt) {
-                ftb = it;
+                if (hdr->shrink_cpct_cnt > cnf->shrink_cpct_cnt) {
+                    ftb = it;
+                }
+                RWUNLOCK(&it->model->lock);
+
+                if (ftb != NULL) break;
             }
-            RWUNLOCK(&it->model->lock);
-
-            if (ftb != NULL) break;
         }
 
         goto _out;
@@ -210,6 +240,60 @@ static ftb_t *search_cpct_tb(T *thiz, int cpct_type)
  _out:
     RWUNLOCK(&thiz->lock);
     return ftb;
+}
+
+static char *stats_info(T *thiz)
+{
+    uint64_t kcnt = 0, fcnt, idx_cnt = 0, vcache = 0, io_hit = 0, cache_hit = 0;
+    char *p, *q;
+    ftb_t *tb;
+    hdr_block_t hdr;
+    
+    p = q = SELF->msg;
+    memset(p, 0x00, sizeof(SELF->msg));
+
+    RWLOCK_READ(&thiz->lock);
+    fcnt = thiz->flist_len;
+    
+    list_for_each_entry(tb, &thiz->flist, fnode) {
+        tb->model->get_stats(tb->model, &hdr);
+
+        kcnt += hdr.key_cnt;
+        idx_cnt += hdr.node_cnt;
+        vcache += hdr.vcache->size;
+        io_hit += hdr.stat.io_hit;
+        cache_hit += hdr.stat.cache_hit;
+    }
+    RWUNLOCK(&thiz->lock);
+
+    snprintf(p, sizeof(SELF->msg),
+             "fcnt:%"PRIu64", kcnt:%"PRIu64
+             ", kcache:%"PRIu64"*%dKB, vcache:%"PRIu64"*%dKB"
+             ", hit_io:%"PRIu64", hit_vcache:%"PRIu64
+             ,fcnt, kcnt
+             ,idx_cnt, BTR_INDEX_BLK_SIZE / 1024
+             ,vcache, BTR_VAL_BLK_SIZE / 1024
+             ,io_hit, cache_hit
+            );
+
+    return SELF->msg;
+}
+
+static void ajust_index(T *thiz)
+{
+    ftb_t *it, **p = SELF->findex;
+    ASSERT(thiz->flag & FSET_FLG_ORDERED);
+
+    if (thiz->flist_len > FINDEX_CNT) {
+        p = MY_Realloc(SELF->findex, sizeof(*p) * thiz->flist_len);
+    }
+
+    SELF->findex = p;
+    SELF->findex_cnt = 0;
+
+    list_for_each_entry(it, &thiz->flist, fnode) {
+        SELF->findex[SELF->findex_cnt++] = it;
+    }
 }
 
 static void  destroy(T *thiz)
@@ -221,6 +305,7 @@ static void  destroy(T *thiz)
         it->destroy(it);
     }
 
+    MY_Free(SELF->findex);
     del_obj(thiz);
 }
 
@@ -230,6 +315,8 @@ T *ftbset_create(pool_t *mpool)
     if (thiz == NULL) return NULL;
 
     SELF = (typeof(SELF))((char *)thiz + sizeof(*thiz));
+    SELF->findex = MY_Malloc(sizeof(ftb_t *) * FINDEX_CNT);
+
     RWLOCK_INIT(&thiz->lock);
     INIT_LIST_HEAD(&thiz->flist);
 
@@ -242,6 +329,8 @@ T *ftbset_create(pool_t *mpool)
     ADD_METHOD(tail          );
     ADD_METHOD(find_ins_pos   );
     ADD_METHOD(search_cpct_tb);
+    ADD_METHOD(stats_info);
+    ADD_METHOD(ajust_index);
 
     return thiz;           
 }

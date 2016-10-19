@@ -51,16 +51,18 @@ struct ftbset_s {
     struct ftbset_pri *pri;
 
     /* methods */
-    void  (*destroy)(ftbset_t *thiz);
+    void   (*destroy)(ftbset_t *thiz);
 
-    int   (*len)(ftbset_t *thiz);
-    int   (*push)(ftbset_t *thiz, T *item);
-    int   (*find)(ftbset_t *thiz, mkey_t *k, mval_t *v);
-    int   (*exist)(ftbset_t *thiz, mkey_t *k, ftb_t *until_pos, uint64_t ver);
-    int   (*find_ins_pos)(ftbset_t *thiz, ftb_t *ftb, ftb_t **pos);
+    int    (*len)(ftbset_t *thiz);
+    int    (*push)(ftbset_t *thiz, T *item);
+    int    (*find)(ftbset_t *thiz, mkey_t *k, mval_t *v);
+    int    (*exist)(ftbset_t *thiz, mkey_t *k, ftb_t *until_pos, uint64_t ver);
+    int    (*find_ins_pos)(ftbset_t *thiz, ftb_t *ftb, ftb_t **pos);
     ftb_t *(*top)(ftbset_t *thiz);
     ftb_t *(*tail)(ftbset_t *thiz);
     ftb_t *(*search_cpct_tb)(ftbset_t *thiz, int cpct_type);
+    char  *(*stats_info)(ftbset_t *thiz);
+    void   (*ajust_index)(ftbset_t *thiz);
 };
 
 struct compactor_s {

@@ -44,6 +44,7 @@ struct btree_s {
     int   (*split)(T *thiz, T *part1, T *part2);
     int   (*shrink)(T *thiz, T *newer);
     int   (*invalid)(T *thiz);
+    int   (*get_stats)(T *thiz, hdr_block_t *hdr);
 
     btriter_t *(*get_iter)(T *thiz, mkey_t *start, mkey_t *stop, BTITERCMP cmp);
 };

@@ -1,6 +1,8 @@
 #ifndef _BTREE_AUX_H_
 #define _BTREE_AUX_H_
 
+#include "vcache.h"
+
 #define BTR_SEC_SIZE 512
 #define BTR_HEADER_BLK_SIZE (8 * BTR_SEC_SIZE)
 #define BTR_VAL_BLK_SIZE (64 * BTR_SEC_SIZE)
@@ -15,6 +17,9 @@
 #define BTR_INDEX_BLK_MSIZE 64
 #define BTR_FILTER_BLK_MSIZE 16
 
+#define BTR_INDEX_KGRP    24
+#define BTR_KCNT_PER_IGRP 8
+#define BTR_KCNT_PER_LGRP 8 
 #define BIN_HEADER_SIZE 64
 
 enum btree_e {
@@ -24,6 +29,11 @@ enum btree_e {
     BTR_INDEX_BLK,
     BTR_FILTER_BLK,
 };
+
+typedef struct btrstat_s {
+    uint64_t io_hit;
+    uint64_t cache_hit;
+} btrstat_t;
 
 typedef struct hdr_block_s {
     char    magic[8];
@@ -40,10 +50,14 @@ typedef struct hdr_block_s {
     uint32_t filter_off;
     uint32_t map_off;
     uint32_t map_size;
+    uint32_t last_voff;
+
+    btrstat_t stat;
 
     mkey_t beg;  /* begin key of key range */
     mkey_t end;  /* end key of key range */
     char *map_buf;  /* mmap buf for index info */
+    vcache_t *vcache;
 } hdr_block_t;
 
 size_t io_read(int fd, void *buf, size_t count);
@@ -57,7 +71,8 @@ char *deseri_key(fkv_t *fkv, char *share, char *delt);
 char *seri_kmeta(char *dst, size_t len, fkv_t *fkv);
 int seri_hdr(char *blkbuf, hdr_block_t *hdr);
 int deseri_hdr(hdr_block_t *hdr, char *blkbuf);
-int read_val(int fd, uint32_t blkoff, uint32_t voff, mval_t *v);
+int read_val(int fd, fkv_t *fkv, mval_t *v);
+int read_vcache(vcache_t *vc, int fd, fkv_t *fkv, mval_t *v);
 int wrap_block_crc(char *blkbuf, size_t blksize);
 int blk_crc32_check(char *blkbuf, size_t blksize);
 size_t bin_kv_size(mkv_t *kv);

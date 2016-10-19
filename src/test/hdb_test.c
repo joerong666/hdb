@@ -83,6 +83,7 @@ enum l_case_e {
     CASE_SINGLE_GET = 1 << 12,   /* 4096 */
     CASE_RANDOM_GET = 1 << 13,   /* 8192 */
     CASE_MULTI_RANDOM_GET = 1 << 14, /* 16384 */
+    CASE_PUT_MULTI_RANDOM_GET = 1 << 15, /* 32768 */
 };
 
 static int l_tcase = 0, loop = 1, dbver = 1;
@@ -330,7 +331,7 @@ static int test_db_random_get(T *db)
         }
 
         if (r == 0) {
-            WARN("i=%d, vlen=%d, vdata=%.*s", i, vs, vs, vdp);
+//            INFO("i=%d, vlen=%d, vdata=%.*s", i, vs, vs, vdp);
             MY_Free(vdp);
         } else {
             ERROR("%s not found or error, r=%d", kdata, r);
@@ -527,7 +528,7 @@ static int test_db_single_get(T *db)
 #ifndef FOR_UNIT_TEST
 static void init_log()
 {
-    static int g_log_level = PF_LOG_DEBUG;
+    static int g_log_level = PF_LOG_WARN;
     static pf_log_config_t g_log_cnf;
 
     pf_log_init_config(&g_log_cnf);
@@ -695,6 +696,20 @@ int main(int argc, char *argv[])
 
         pthread_join(pth, NULL);
         pthread_join(gth, NULL);
+
+        read(1, buf, 1);
+    }
+
+    if (l_tcase & CASE_PUT_MULTI_RANDOM_GET) {
+        pthread_t pth1, gth1, gth2;
+
+        pthread_create(&pth1, NULL, test_db_put, db);
+        pthread_create(&gth1, NULL, test_db_random_get, db);
+        pthread_create(&gth2, NULL, test_db_random_get, db);
+
+        pthread_join(pth1, NULL);
+        pthread_join(gth1, NULL);
+        pthread_join(gth2, NULL);
 
         read(1, buf, 1);
     }
