@@ -38,13 +38,18 @@ struct dbit_impl_pri {
 
 static int prefix_cmp(mkey_t *target, mkey_t *start, mkey_t *stop)
 {
+    int r, len;
+
     (void)stop;
 
     if (start == NULL || start->data == NULL) return 0;
 
-    if (target->len < start->len) return -1;
+    len = target->len > start->len ? start->len : target->len;
+    r = memcmp(target->data, start->data, len);
+    if (r != 0) return r;
+    if (target->len >= start->len) return 0;
 
-    return memcmp(target->data, start->data, start->len);
+    return -1;
 }
 
 static int range_cmp(mkey_t *target, mkey_t *start, mkey_t *stop)
